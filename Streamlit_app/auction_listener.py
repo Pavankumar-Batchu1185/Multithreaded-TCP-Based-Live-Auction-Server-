@@ -44,9 +44,6 @@ connection_pool = None
 
 
 def add_to_waiting_room(auction_code: str, username: str):
-    """
-    Adds a buyer to the waiting list for an auction (de-duplicated by username).
-    """
     try:
         waiting_col.update_one(
             {"auction_code": auction_code},
@@ -57,9 +54,6 @@ def add_to_waiting_room(auction_code: str, username: str):
         log.error(f"Failed to add to waiting room {auction_code} : {e}")
 
 def remove_from_waiting_room(auction_code: str, username: str):
-    """
-    Removes a buyer from the waiting list for an auction.
-    """
     try:
         waiting_col.update_one(
             {"auction_code": auction_code},
@@ -69,9 +63,6 @@ def remove_from_waiting_room(auction_code: str, username: str):
         log.error(f"Failed to remove from waiting room {auction_code} : {e}")
 
 def get_waiting_users(auction_code: str):
-    """
-    Returns a list of waiting users for auction_code: [{username, joined_at}, ...]
-    """
     try:
         doc = waiting_col.find_one({"auction_code": auction_code})
         if not doc:
@@ -82,9 +73,6 @@ def get_waiting_users(auction_code: str):
         return []
 
 def clear_waiting_room(auction_code: str):
-    """
-    Remove the waiting room doc for the auction (optional/cleanup).
-    """
     try:
         waiting_col.delete_one({"auction_code": auction_code})
     except Exception as e:
@@ -117,16 +105,12 @@ def update_current_bid_by_code(new_bid: float, bidder_id: str, auction_code: str
         log.error(f"Error updating bid in MySQL for {auction_code}: {e}")
 
 def get_closed_auctions():
-    """Get closed auctions from MongoDB auction_history"""
     try:
         client = MongoClient("mongodb+srv://pavankumarbatchu1185_db_user:Bvnspk%401185@cluster0.asbvkak.mongodb.net/")
         db = client["auction_data"]
         history_col = db["auction_history"]
         
-        # Get all completed auctions, sorted by closed date (newest first)
         auctions = list(history_col.find().sort("closed_at", -1))
-        
-        # Convert MongoDB docs to match the expected format
         result = []
         for doc in auctions:
             result.append({
@@ -162,11 +146,9 @@ def get_product_id_by_code(auction_code: str):
 
 def log_bid_to_mongo(product_id, bidder, bid_value):
     try:
-        # ensure numeric type for MongoDB storage
         try:
             bid_amount = float(bid_value)
         except Exception:
-            # if it was Decimal or malformed, coerce via str->float as last resort
             bid_amount = float(str(bid_value))
 
         bid_entry = {
@@ -192,25 +174,18 @@ def log_bid_to_mongo(product_id, bidder, bid_value):
         log.exception(f"Error logging to MongoDB: {e}")
 
 def finalize_mongo_auction(product_id, winner, final_bid):
-    """
-    Finalize auction by moving from active_auctions to auction_history
-    with complete bid data preservation
-    """
     try:
         log.info(f"🏁 Finalizing auction for product {product_id}, winner: {winner}, final_bid: {final_bid}")
         
-        # Get active auction document
         doc = active_col.find_one({"product_id": product_id})
         if not doc:
             log.warning(f"⚠️ No active auction document found for product {product_id}")
-            # Check if it already exists in history
             existing = history_col.find_one({"product_id": product_id})
             if existing:
                 log.info(f"✅ Auction already finalized in history for {product_id}")
                 return
             else:
                 log.error(f"❌ No active or history document for {product_id}!")
-                # Create minimal history entry
                 doc = {
                     "product_id": product_id,
                     "bids": [],
@@ -219,7 +194,6 @@ def finalize_mongo_auction(product_id, winner, final_bid):
                     "closed_at": datetime.utcnow()
                 }
         
-        # Get product details
         product = products_col.find_one({"_id": ObjectId(product_id)})
         if product:
             product_name = product.get("name", "Unknown")
@@ -230,25 +204,18 @@ def finalize_mongo_auction(product_id, winner, final_bid):
             product_name = "Unknown"
             auction_code = "N/A"
             seller = "Unknown"
-        
-        # Sanitize and validate bids
         bids = doc.get("bids", [])
         log.info(f"📝 Processing {len(bids)} bids for auction {auction_code}")
         
         sanitized_bids = []
         for i, bid in enumerate(bids):
             try:
-                # Ensure amount is float
                 amount = bid.get("amount", 0)
-                if hasattr(amount, 'to_decimal'):  # Decimal128
+                if hasattr(amount, 'to_decimal'):  
                     amount = float(amount.to_decimal())
                 else:
                     amount = float(amount)
-                
-                # Ensure bidder is string
                 bidder = str(bid.get("bidder", "Unknown"))
-                
-                # Ensure timestamp exists
                 timestamp = bid.get("timestamp", datetime.utcnow())
                 
                 sanitized_bid = {
@@ -264,11 +231,8 @@ def finalize_mongo_auction(product_id, winner, final_bid):
         
         log.info(f"✅ Sanitized {len(sanitized_bids)} bids successfully")
         
-        # Log all unique bidders
         unique_bidders = set(b["bidder"] for b in sanitized_bids)
         log.info(f"👥 Unique bidders: {unique_bidders}")
-        
-        # Create history document
         history_doc = {
             "product_id": product_id,
             "product_name": product_name,
@@ -276,19 +240,14 @@ def finalize_mongo_auction(product_id, winner, final_bid):
             "seller": seller,
             "winner": str(winner),
             "final_bid": float(final_bid),
-            "bids": sanitized_bids,  # Complete bid history
+            "bids": sanitized_bids,  
             "closed_at": datetime.utcnow()
         }
-        
-        # Insert into history
         result = history_col.insert_one(history_doc)
         log.info(f"✅ Inserted auction into history with _id: {result.inserted_id}")
         
-        # Remove from active auctions
         delete_result = active_col.delete_one({"product_id": product_id})
         log.info(f"🗑️ Deleted {delete_result.deleted_count} active auction doc(s)")
-        
-        # Update product status
         update_result = products_col.update_one(
             {"_id": ObjectId(product_id)},
             {"$set": {
@@ -300,7 +259,6 @@ def finalize_mongo_auction(product_id, winner, final_bid):
         )
         log.info(f"📦 Updated product status (matched: {update_result.matched_count}, modified: {update_result.modified_count})")
         
-        # Verify the auction was saved correctly
         verify = history_col.find_one({"auction_code": auction_code})
         if verify:
             verify_bids = len(verify.get("bids", []))
@@ -313,7 +271,6 @@ def finalize_mongo_auction(product_id, winner, final_bid):
         
     except Exception as e:
         log.exception(f"❌ CRITICAL ERROR finalizing auction for product {product_id}: {e}")
-        # Try to save minimal info even if error occurs
         try:
             history_col.insert_one({
                 "product_id": product_id,
@@ -327,41 +284,28 @@ def finalize_mongo_auction(product_id, winner, final_bid):
         except:
             log.error(f"❌ Failed to save even minimal history!")
 
-# ============================================
-# BUYER STATISTICS FUNCTIONS
-# ============================================
 
 def get_buyer_stats(username):
-    """Get comprehensive statistics for a buyer with detailed logging"""
     try:
         log.info(f"📊 Fetching stats for buyer: {username}")
         
         db = mongo_db
         history_col_local = db["auction_history"]
-        
-        # Get all completed auctions where user placed ANY bid
         participated_auctions = list(history_col_local.find({
             "bids.bidder": username
         }))
         
         log.info(f"🔍 Found {len(participated_auctions)} auctions where {username} participated")
-        
-        # Get auctions won by this user
         won_auctions = list(history_col_local.find({
             "winner": username
         }))
         
         log.info(f"🏆 Found {len(won_auctions)} auctions won by {username}")
-        
-        # Log details of won auctions
         for auction in won_auctions:
             log.info(f"  - Won: {auction.get('product_name')} ({auction.get('auction_code')}) for ${auction.get('final_bid')}")
         
-        # Calculate statistics
         total_participated = len(participated_auctions)
         total_won = len(won_auctions)
-        
-        # Calculate total spent
         from bson.decimal128 import Decimal128
         total_spent = 0.0
         for auction in won_auctions:
@@ -371,10 +315,7 @@ def get_buyer_stats(username):
             else:
                 total_spent += float(final_bid)
         
-        # Calculate win rate
         win_rate = (total_won / total_participated * 100) if total_participated > 0 else 0.0
-        
-        # Get average bid amount
         all_user_bids = []
         for auction in participated_auctions:
             user_bids = [b for b in auction.get("bids", []) if b.get("bidder") == username]
@@ -413,23 +354,16 @@ def get_buyer_stats(username):
             "participated_auctions": []
         }
 
-# ============================================
-# SELLER STATISTICS FUNCTIONS
-# ============================================
 
 def get_seller_stats(username):
     """Get comprehensive statistics for a seller"""
     try:
-        db = mongo_db  # Already connected to Atlas
+        db = mongo_db  
         history_col_local = db["auction_history"]
-        
-        # Get products by seller (use global products_col)
         total_products = products_col.count_documents({"seller": username})
         available_products = products_col.count_documents({"seller": username, "status": "available"})
         in_auction_products = products_col.count_documents({"seller": username, "status": "in_auction"})
         sold_products = products_col.count_documents({"seller": username, "status": "sold"})
-        
-        # Get MySQL auctions
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT COUNT(*) as total FROM auctions WHERE created_by=%s", (username,))
@@ -442,14 +376,10 @@ def get_seller_stats(username):
         closed_auctions = cursor.fetchone()["closed"]
         cursor.close()
         conn.close()
-        
-        # Get completed auctions from MongoDB to calculate revenue
         completed = list(history_col_local.find({
             "seller": username
         }))
-        
-        # Calculate total revenue
-        from bson.decimal128 import Decimal128  # Add this import at top if not there
+        from bson.decimal128 import Decimal128 
         total_revenue = 0.0
         for auction in completed:
             if auction.get("winner") != "No Bids":
@@ -458,11 +388,7 @@ def get_seller_stats(username):
                     total_revenue += float(final_bid.to_decimal())
                 else:
                     total_revenue += float(final_bid)
-        
-        # Calculate average selling price
         avg_price = total_revenue / sold_products if sold_products > 0 else 0.0
-        
-        # Success rate (sold / total auctions)
         success_rate = (sold_products / total_auctions * 100) if total_auctions > 0 else 0.0
         
         return {
@@ -478,7 +404,7 @@ def get_seller_stats(username):
             "success_rate": success_rate
         }
     except Exception as e:
-        log.error(f"Error getting seller stats: {e}")  # Use log instead of print
+        log.error(f"Error getting seller stats: {e}")  
         return {
             "total_products": 0,
             "available_products": 0,
@@ -538,7 +464,6 @@ def delete_product_from_mongo(product_id):
 def parse_bid_message(msg: str):
     try:
         msg = msg.strip()
-        # NEW HIGH BID! <amount> by <username> in <AUC-XXXX>
         m = re.search(r'NEW\s+HIGH\s+BID!\s*([0-9]+(?:\.[0-9]+)?)\s+by\s+(.+?)\s+in\s+(AUC-[A-Z0-9]+)', msg, re.IGNORECASE)
         if m:
             bid = float(m.group(1))
@@ -546,7 +471,6 @@ def parse_bid_message(msg: str):
             auction_code = m.group(3).strip()
             return bid, bidder, auction_code
 
-        # [JOIN] <username> joined <AUC-XXXX>
         m2 = re.search(r'\[JOIN\]\s+(.+?)\s+joined\s+(AUC-[A-Z0-9]+)', msg, re.IGNORECASE)
         if m2:
             username = m2.group(1).strip()

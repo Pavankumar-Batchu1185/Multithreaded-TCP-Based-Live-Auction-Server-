@@ -1,11 +1,9 @@
-/* ======================================================
-   CLEAN, PROFESSIONAL UI - High Contrast & Readability
-   ====================================================== */
+
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
 :root {
-    /* Clean Color Palette - High Contrast */
+  
     --primary: #6366f1;
     --primary-dark: #4f46e5;
     --primary-light: #818cf8;
@@ -37,18 +35,13 @@
     --radius-lg: 12px;
 }
 
-/* ======================================================
-   BASE APP - Clean Background
-   ====================================================== */
 .stApp {
     background: #f5f5f5;
     font-family: "Inter", sans-serif;
     color: var(--text-primary);
 }
 
-/* ======================================================
-   SCROLLBAR
-   ====================================================== */
+
 ::-webkit-scrollbar {
     width: 10px;
 }
@@ -67,9 +60,6 @@
     background: var(--primary-dark);
 }
 
-/* ======================================================
-   HEADINGS - Solid Colors
-   ====================================================== */
 h1 {
     color: var(--text-primary) !important;
     font-size: 2.5rem !important;
@@ -92,9 +82,6 @@ h3 {
     color: var(--text-primary) !important;
 }
 
-/* ======================================================
-   CARDS & CONTAINERS - Simple & Clean
-   ====================================================== */
 [data-testid="stContainer"],
 .stContainer {
     background: var(--bg-primary) !important;
@@ -109,9 +96,6 @@ h3 {
     box-shadow: var(--shadow-lg) !important;
 }
 
-/* ======================================================
-   SIDEBAR
-   ====================================================== */
 [data-testid="stSidebar"] {
     background: var(--bg-primary) !important;
     border-right: 1px solid var(--border-default) !important;
@@ -139,9 +123,6 @@ h3 {
     font-weight: 700 !important;
 }
 
-/* ======================================================
-   INPUTS & TEXTAREAS
-   ====================================================== */
 input[type="text"],
 input[type="password"],
 input[type="number"],
@@ -166,9 +147,6 @@ textarea:focus {
     outline: none !important;
 }
 
-/* ======================================================
-   SELECTBOX
-   ====================================================== */
 .stSelectbox > div {
     border: 2px solid var(--border-default) !important;
     border-radius: var(--radius-md) !important;
@@ -192,9 +170,6 @@ textarea:focus {
     font-weight: 600 !important;
 }
 
-/* ======================================================
-   BUTTONS - Solid Colors
-   ====================================================== */
 .stButton button,
 .stFormSubmitButton button,
 [data-testid="baseButton-primary"] button {
@@ -221,7 +196,7 @@ textarea:focus {
     background: var(--primary-dark) !important;
 }
 
-/* Secondary Button */
+
 [data-testid="baseButton-secondary"] button {
     background: var(--bg-primary) !important;
     color: var(--primary) !important;
@@ -233,9 +208,6 @@ textarea:focus {
     background: var(--bg-secondary) !important;
 }
 
-/* ======================================================
-   EXPANDER
-   ====================================================== */
 [data-testid="stExpander"] {
     border-radius: var(--radius-md) !important;
     border: 1px solid var(--border-light) !important;
@@ -258,9 +230,6 @@ textarea:focus {
     border-radius: var(--radius-md) !important;
 }
 
-/* ======================================================
-   METRICS
-   ====================================================== */
 [data-testid="metric-container"] {
     border-radius: var(--radius-md) !important;
     background: var(--bg-primary) !important;
@@ -279,9 +248,6 @@ textarea:focus {
     color: var(--text-primary) !important;
 }
 
-/* ======================================================
-   TABLES
-   ====================================================== */
 [data-testid="stDataFrame"] {
     border-radius: var(--radius-md) !important;
     border: 1px solid var(--border-light) !important;
@@ -289,9 +255,6 @@ textarea:focus {
     background: var(--bg-primary) !important;
 }
 
-/* ======================================================
-   TABS
-   ====================================================== */
 [data-baseweb="tab-list"] {
     background: var(--bg-secondary) !important;
     border-radius: var(--radius-md) !important;
@@ -307,9 +270,6 @@ textarea:focus {
     color: white !important;
 }
 
-/* ======================================================
-   BID HISTORY CARDS
-   ====================================================== */
 .bid-card {
     background: var(--bg-primary) !important;
     padding: 1.5rem !important;
@@ -355,9 +315,6 @@ textarea:focus {
     font-family: "Inter", sans-serif !important;
 }
 
-/* ======================================================
-   AUCTION CARD
-   ====================================================== */
 .auction-card {
     background: var(--bg-primary) !important;
     border-radius: var(--radius-lg) !important;
@@ -370,9 +327,6 @@ textarea:focus {
     box-shadow: var(--shadow-lg) !important;
 }
 
-/* ======================================================
-   STATUS BADGES - Solid Colors
-   ====================================================== */
 .status-badge {
     display: inline-block;
     padding: 6px 12px;
@@ -399,26 +353,18 @@ textarea:focus {
     color: white;
 }
 
-/* ======================================================
-   NOTIFICATION STYLES
-   ====================================================== */
+
 .stAlert {
     border-radius: var(--radius-md) !important;
     box-shadow: var(--shadow-md) !important;
     border: 1px solid var(--border-light) !important;
 }
 
-/* ======================================================
-   IMAGE STYLES
-   ====================================================== */
 img {
     border-radius: var(--radius-md) !important;
     box-shadow: var(--shadow-sm) !important;
 }
 
-/* ======================================================
-   RESPONSIVE DESIGN
-   ====================================================== */
 @media (max-width: 768px) {
     h1 {
         font-size: 2rem !important;
@@ -434,12 +380,10 @@ img {
     }
 }
 
-/* Sidebar background and general styling */
 [data-testid="stSidebar"] {
     background-color: #1f2937;
 }
 
-/* Make only specific markdown content white (username/role in header) */
 [data-testid="stSidebar"] [data-testid="stMarkdown"] h1,
 [data-testid="stSidebar"] [data-testid="stMarkdown"] h2,
 [data-testid="stSidebar"] [data-testid="stMarkdown"] h3,
@@ -447,7 +391,6 @@ img {
     color: white !important;
 }
 
-/* Custom Navigation Header Styling */
 .nav-header {
      color: #151617 !important;
     font-size: 0.9rem;
@@ -458,12 +401,11 @@ img {
     border-bottom: 10px solid rgba(255, 255, 255, 0.2);
 }
 
-/* Hide default radio label since we have custom header */
+
 [data-testid="stSidebar"] label[data-testid="stWidgetLabel"] {
     display: none;
 }
 
-/* Keep radio button labels LIGHT and visible against dark background */
 [data-testid="stSidebar"] .stRadio label,
 [data-testid="stSidebar"] .stRadio label span,
 [data-testid="stSidebar"] div[role="radiogroup"] label,
@@ -472,27 +414,23 @@ img {
     font-weight: 500 !important;
 }
 
-/* Style the radio buttons container */
 [data-testid="stSidebar"] .stRadio {
     background-color: rgba(235, 221, 221, 0.05);
     padding: 10px;
     border-radius: 8px;
 }
 
-/* Hover effect for radio options */
 [data-testid="stSidebar"] .stRadio label:hover {
     background-color: rgba(255, 255, 255, 0.1);
     border-radius: 4px;
 }
 
-/* Selected radio button styling */
 [data-testid="stSidebar"] .stRadio input[type="radio"]:checked + label {
     background-color: rgba(255, 255, 255, 0.15);
     border-radius: 4px;
     font-weight: 600 !important;
 }
 
-/* Logout button styling */
 [data-testid="stSidebar"] button[kind="secondary"] {
     background-color: #ef4444 !important;
     color: white !important;

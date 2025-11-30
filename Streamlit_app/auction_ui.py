@@ -7,7 +7,6 @@ import hashlib
 from datetime import datetime
 from datetime import timezone
 import time
-# Assuming these imports work and the functions are defined elsewhere or correctly imported
 from auction_listener import finalize_mongo_auction
 from auction_listener import get_product_from_mongo, save_product_to_mongo, products_col
 from auction_listener import add_to_waiting_room, remove_from_waiting_room, get_waiting_users, clear_waiting_room,get_seller_stats,get_buyer_stats
@@ -31,7 +30,6 @@ DB_CONFIG = {
     "database": "auction_system"
 }
 
-# Make paths configurable (server exe only used by admin)
 SERVER_EXE = Path(r"D:\TY SEM1\CN\CP\Multithreaded-TCP-Based-Live-Auction-Server-\Server\AuctionServer.exe")
 SERVER_HOST = "127.0.0.1" 
 SERVER_PORT = 8000
@@ -45,14 +43,8 @@ def hash_password(password):
 import re
 
 def is_valid_email(email):
-    """
-    Validates email format using regex.
-    Returns True if valid, False otherwise.
-    """
     if not email:
         return False
-    
-    # Basic email regex pattern
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
@@ -78,15 +70,12 @@ def register_user(username, password, role, email=None):
     if user_exists(username):
         st.error("Username already exists.")
         return False
-    
-    # ✅ Email is REQUIRED
     if not email or not email.strip():
         st.error("❌ Email address is required.")
         return False
     
     final_email = email.strip()
     
-    # ✅ Validate email format using regex
     if not is_valid_email(final_email):
         st.error("❌ Please provide a valid email address (e.g., user@example.com).")
         return False
@@ -124,7 +113,6 @@ def generate_auction_code():
     return "AUC-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
 
 def insert_auction(product_id: str, product_name: str, base_price: float, duration_minutes: int = 2):
-    # Check if product already has an active auction
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     
@@ -138,7 +126,6 @@ def insert_auction(product_id: str, product_name: str, base_price: float, durati
         conn.close()
         raise ValueError(f"Product already has an active auction (Code: {existing.get('auction_code')})")
     
-    # Check MongoDB status
     try:
         product = products_col.find_one({"_id": ObjectId(product_id)})
         if product and product.get("status") != "available":
@@ -161,8 +148,6 @@ def insert_auction(product_id: str, product_name: str, base_price: float, durati
     conn.commit()
     conn.close()
     st.session_state.last_auction_code = auction_code
-
-    # Mark product in MongoDB as in_auction
     try:
         products_col.update_one(
             {"_id": ObjectId(product_id)},
@@ -190,23 +175,14 @@ def close_expired_auctions():
         if not start:
             continue
 
-        # Convert MySQL string timestamps to datetime
         if isinstance(start, str):
             start = datetime.fromisoformat(start)
-
-        # Convert to UTC
         start_utc = start.replace(tzinfo=timezone.utc)
         now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-
-        # Calculate elapsed seconds
         elapsed = (now_utc - start_utc).total_seconds()
-
-        # Auction expired?
         if elapsed >= duration * 60:
             final_bid = float(auction.get("current_bid") or auction.get("base_price"))
             winner = auction.get("current_bidder", "No Bids")
-
-            # Close in SQL
             cursor.execute("""
                 UPDATE auctions 
                 SET status='closed', end_time=%s, final_bid=%s, winner=%s
@@ -214,8 +190,6 @@ def close_expired_auctions():
             """, (datetime.utcnow(), final_bid, winner, auction["id"]))
 
             print(f"Closed Auction {auction['id']} | Winner: {winner} | Final Bid: {final_bid}")
-
-            # Finalize in MongoDB
             try:
                 finalize_mongo_auction(auction["product_id"], winner, float(final_bid))
                 products_col.update_one(
@@ -229,12 +203,8 @@ def close_expired_auctions():
                 )
             except Exception as e:
                 print("Error finalizing Mongo auction:", e)
-
-            # Remove auction row from SQL
             cursor.execute("DELETE FROM auctions WHERE id=%s", (auction["id"],))
             conn.commit()
-
-            # Clear waiting room
             try:
                 clear_waiting_room(auction.get("auction_code"))
             except:
@@ -250,8 +220,6 @@ def get_active_auctions():
     rows = cursor.fetchall()
     conn.close()
     return rows or []
-
-
 
 def get_seller_auctions(username):
     conn = get_db_connection()
@@ -348,26 +316,21 @@ def svg_avatar_data_uri(username: str, size=64):
     return "data:image/svg+xml;utf8," + quote(svg, safe='')
 
 def load_css_file(filename="index.css"):
-    """Reads the content of the CSS file and wraps it in <style> tags."""
-    # This assumes 'styles.css' is in the same directory as auction_ui.py
     css_filepath = Path(__file__).parent / filename
     
     if not css_filepath.exists():
-        # You might want to remove this error in production, but helpful for development
         st.error(f"CSS file not found at: {css_filepath}") 
         return ""
     
     try:
         with open(css_filepath, "r") as f:
             css_content = f.read()
-            # Wrap the raw CSS content in <style> tags as required by st.markdown
             return f"<style>{css_content}</style>"
     except Exception as e:
         st.error(f"Error reading CSS file: {e}")
         return ""
 
 def get_all_users():
-    """Get all users from database"""
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT id, username, role, email, created_at FROM users ORDER BY created_at DESC")
@@ -385,36 +348,28 @@ def delete_user(user_id):
 
 def display_product_image_with_zoom(product_id, caption="Product Image", thumbnail_width=150):
     try:
-        # Get product and image from MongoDB
         product, image_bytes = get_product_from_mongo(product_id)
         
         if image_bytes:
-            # Create two columns: thumbnail and zoom button
             col_thumb, col_zoom = st.columns([3, 1])
             
             with col_thumb:
-                # Show thumbnail
                 st.image(image_bytes, caption=caption, width=thumbnail_width)
             
             with col_zoom:
-                # Create unique key for this product's zoom
                 zoom_key = f"zoom_modal_{product_id}"
                 
-                # Toggle button for zoom
                 if st.button("🔍 Zoom", key=f"btn_{product_id}", use_container_width=True):
                     st.session_state[zoom_key] = not st.session_state.get(zoom_key, False)
             
-            # Show full-size image in expander if zoom is active
             if st.session_state.get(zoom_key, False):
                 with st.expander("🖼️ Full Size Image", expanded=True):
                     st.image(image_bytes, use_container_width=True)
                     
-                    # Close button
                     if st.button("❌ Close", key=f"close_{product_id}", use_container_width=True):
                         st.session_state[zoom_key] = False
                         st.rerun()
         else:
-            # No image available - show placeholder
             st.image(
                 "https://via.placeholder.com/300x225.png?text=No+Image+Available", 
                 caption=caption,
@@ -432,19 +387,15 @@ def display_product_image_with_zoom(product_id, caption="Product Image", thumbna
         )
         return None, None
 
-
 def admin_add_user(username, password, role, email=None):
-    """Admin function to add a user"""
     if user_exists(username):
         return False, "Username already exists."
     
-    # ✅ Email is REQUIRED
     if not email or not email.strip():
         return False, "Email address is required."
     
     final_email = email.strip()
     
-    # ✅ Validate email format
     if "@" not in final_email or "." not in final_email:
         return False, "Invalid email format."
     
@@ -459,13 +410,10 @@ def admin_add_user(username, password, role, email=None):
     return True, "User added successfully!"
 
 custom_css = load_css_file("index.css")
-# 1. Page Setup
 st.set_page_config(page_title="BidVerse", layout="wide", initial_sidebar_state="expanded", menu_items={'About': 'A multi-threaded TCP-based live auction system UI.'})
 
-# Load CSS once
 st.markdown(custom_css, unsafe_allow_html=True)
 
-# Beautiful Animated Header
 header_html = """
 <div style="text-align: center; padding: 2rem 0; margin-bottom: 2rem;">
     <h1 style="
@@ -499,7 +447,6 @@ if "logged_in" not in st.session_state:
 
 # LOGIN / REGISTER
 if not st.session_state.logged_in:
-    # Use columns to center the login/register forms and make them more compact
     col_login_spacer, col_login, col_reg, col_login_spacer_end = st.columns([1, 2, 2, 1])
     
     with col_login:
@@ -602,8 +549,6 @@ if not st.session_state.logged_in:
 else:
     role = st.session_state.role
     username = st.session_state.username
-
-    # 2. Refined Sidebar
     with st.sidebar:
         sidebar_header = f"""
         <div style="
@@ -645,10 +590,7 @@ else:
         </div>
         """
         st.markdown(sidebar_header, unsafe_allow_html=True)
-
-       
-        # Navigation based on role
-                # Navigation based on role
+        # Define navigation options based on role
         nav_options = {
             "Admin": {
                 "Server Control": "⚙️ Server Control", 
@@ -658,46 +600,41 @@ else:
                 "Bid History": "📜 Bid History"
             },
             "Seller": {
-                "Dashboard": "📊 Dashboard",           # NEW
+                "Dashboard": "📊 Dashboard",          
                 "Products": "📦 Product Catalog", 
                 "My Auctions": "🔨 My Active Auctions"
             },
             "Buyer": {
-                "Dashboard": "📊 Dashboard",           # NEW
+                "Dashboard": "📊 Dashboard",          
                 "Active Auctions": "💰 Live Auctions",
-                "My Purchases": "🛍️ My Purchases",    # NEW
-                "Bidding History": "📜 Bid History"    # NEW
+                "My Purchases": "🛍️ My Purchases",    
+                "Bidding History": "📜 Bid History"   
             }
         }
-        
-        # Determine the user's page options and select the first one by default
         role_pages = nav_options.get(role, {})
         page_keys = list(role_pages.keys())
         
         st.header('📍 Navigation')
 
         page = st.radio(
-            "Navigation:",  # This label will now be hidden by the markdown above
+            "Navigation:",  
             options=page_keys,
             format_func=lambda x: role_pages[x],
             index=page_keys.index(st.session_state.get('current_page', page_keys[0])),
             key='current_page',
-            label_visibility="collapsed"  # Hide the default label
+            label_visibility="collapsed"  
         )
                 
-        st.markdown("<br><br><br>", unsafe_allow_html=True) # Push to bottom
+        st.markdown("<br><br><br>", unsafe_allow_html=True) 
         if st.button("🚪 Logout", use_container_width=True, type="secondary"):
             cleanup_tcp_client()
             st.session_state.clear()
             st.toast("Logged out successfully!")
             time.sleep(1)
             st.rerun()
-    
-    # 3. Seller UI: Products (upload + start auctions)
+
     if role == "Seller" and page == "Products":
         st.header("📦 Product Catalog")
-        
-        # Upload Form
         st.subheader("⬆️ Upload New Product", help="Add a product to your catalog before starting an auction.")
         with st.expander("Click to add a new product", expanded=False):
             with st.form("upload_form", clear_on_submit=True):
@@ -733,31 +670,23 @@ else:
 
         st.markdown("---")
         st.header("📋 Your Products Overview")
-
-        # Load products
         available_products = list(products_col.find({"seller": username, "status": "available"}))
         in_auction_products = list(products_col.find({"seller": username, "status": "in_auction"}))
         sold_products = list(products_col.find({"seller": username, "status": "sold"}))
-
-        # Use tabs for a cleaner view
         tab_available, tab_in_auction, tab_sold = st.tabs([
             f"Available ({len(available_products)})",
             f"In Auction ({len(in_auction_products)})",
             f"Sold ({len(sold_products)})"
         ])
-
-        # AVAILABLE
         st.subheader("✅ Available for Auction")
         if not available_products:
             st.info("No available products. Please upload one above.")
         else:
-            # Use columns and a card-like layout for each product
-            cols = st.columns(3, gap="medium") # Create columns for a grid view
+            cols = st.columns(3, gap="medium") 
             for i, p in enumerate(available_products):
-                with cols[i % 3]: # Cycle through the columns
+                with cols[i % 3]: 
                     with st.container(border=True):
                         st.markdown(f"### {p.get('name')}", unsafe_allow_html=True)
-                          # Use the zoom function instead of direct image display
                         display_product_image_with_zoom(
                             str(p["_id"]), 
                             caption=p.get('name'), 
@@ -766,8 +695,6 @@ else:
 
                         st.markdown(f"<p style='font-size: 1.2rem;'>*Base Price:* **<span style='color: #f39c12;'>${p.get('base_price', 'N/A')}</span>**</p>", unsafe_allow_html=True)
                         st.write(f"Description: {p.get('description', '')[:50]}...")
-
-                        # Start Auction Form
                         with st.form(f"start_auction_{p['_id']}"):
                             duration_key = f"dur_{p['_id']}"
                             meet_key = f"meet_{p['_id']}"
@@ -818,6 +745,7 @@ else:
                 for p in sold_products:
                     st.success(f"🎉 **{p.get('name')}** sold to **{p.get('sold_to','N/A')}** for **${p.get('sold_price','N/A')}**")
                     st.caption(f"Code: {p.get('auction_code', 'N/A')} | Sold At: {p.get('sold_at')}")
+
     # 4. Admin UI: Server Control
     elif role == "Admin" and page == "Server Control":
         st.header("⚙️ Auction Server Control Panel")
@@ -965,8 +893,6 @@ else:
             for a in active_auctions:
                 with st.container(border=True):
                     col_img, col_info, col_stats = st.columns([1, 2, 1])
-                    
-                    # Image
                     with col_img:
                         try:
                             _, image_bytes = get_product_from_mongo(a.get("product_id"))
@@ -976,14 +902,10 @@ else:
                                 st.image("https://via.placeholder.com/120x90.png?text=Item", width=120)
                         except:
                             st.image("https://via.placeholder.com/120x90.png?text=Item", width=120)
-                    
-                    # Info
                     with col_info:
                         st.markdown(f"### {a.get('product_name')}")
                         st.markdown(f"**Code:** `{a.get('auction_code')}`")
                         st.markdown(f"**Seller:** {a.get('created_by')}")
-                        
-                        # Timer
                         start = a.get("start_time")
                         duration = a.get("duration_minutes") or 0
                         if start:
@@ -1000,14 +922,10 @@ else:
                                 st.error(f"⏱️ Time Remaining: **{timer}**")
                             else:
                                 st.info(f"⏱️ Time Remaining: **{timer}**")
-                    
-                    # Stats
                     with col_stats:
                         st.metric("Current Bid", f"${a.get('current_bid', a.get('base_price'))}")
                         st.metric("Base Price", f"${a.get('base_price')}")
                         st.caption(f"Highest Bidder: **{a.get('current_bidder', 'No bids yet')}**")
-                    
-                    # Waiting Room
                     with st.expander(f"👥 Waiting Room ({a.get('auction_code')})"):
                         waiting_users = get_waiting_users(a.get('auction_code'))
                         if waiting_users:
@@ -1019,12 +937,9 @@ else:
                         else:
                             st.info("No buyers in waiting room")
 
-    # Admin UI: User Management
   # Admin UI: User Management
     elif role == "Admin" and page == "User Management":
         st.header("👥 User Management")
-        
-        # Add User Section
         st.subheader("➕ Add New User")
         with st.expander("Add User Form", expanded=False):
             with st.form("admin_add_user_form", clear_on_submit=True):
@@ -1039,7 +954,6 @@ else:
                 submitted = st.form_submit_button("➕ Add User", type="primary", use_container_width=True)
                 
                 if submitted:
-                    # ✅ Validate all fields including email
                     if not new_username or not new_password or not new_email:
                         st.error("❌ All fields are required (Username, Password, Email, Role)!")
                     elif "@" not in new_email or "." not in new_email:
@@ -1053,24 +967,19 @@ else:
                         else:
                             st.error(message)
         
-        # List All Users
         st.subheader("📋 All Users")
         users = get_all_users()
         
         if not users:
             st.info("No users found in the system.")
         else:
-            # Add search/filter
             search_term = st.text_input("🔍 Search users", placeholder="Search by username or role...")
-            
-            # Filter users
             filtered_users = users
             if search_term:
                 filtered_users = [u for u in users if 
                                 search_term.lower() in u.get('username', '').lower() or 
                                 search_term.lower() in u.get('role', '').lower()]
             
-            # Display stats
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total Users", len(users))
             col2.metric("Buyers", len([u for u in users if u.get('role') == 'Buyer']))
@@ -1078,14 +987,11 @@ else:
             col4.metric("Admins", len([u for u in users if u.get('role') == 'Admin']))
             
             st.markdown("---")
-            
-            # Display users in a grid
             for user in filtered_users:
                 with st.container(border=True):
                     col_avatar, col_info, col_actions = st.columns([1, 4, 1])
                     
                     with col_avatar:
-                        # Avatar
                         avatar_url = svg_avatar_data_uri(user.get('username', 'U'), size=64)
                         st.markdown(f"""
                             <div style="text-align: center;">
@@ -1095,8 +1001,6 @@ else:
                     
                     with col_info:
                         st.markdown(f"### {user.get('username')}")
-                        
-                        # Role badge with color
                         role = user.get('role', 'Unknown')
                         role_colors = {
                             'Admin': '#ef4444',
@@ -1121,7 +1025,6 @@ else:
                         st.caption(f"📅 Created: {user.get('created_at', 'N/A')}")
                     
                     with col_actions:
-                        # Prevent deleting yourself or last admin
                         if user.get('username') == username:
                             st.warning("You (current user)")
                         else:
@@ -1148,11 +1051,8 @@ else:
                                         st.session_state[delete_key] = False
                                         st.rerun()
 
-    # 6. Buyer UI: Active Auctions Listing & Join
     elif role == "Buyer" and page == "Active Auctions" and not st.session_state.get("in_auction_room", False):
         st_autorefresh(interval=10000, key="auction_list_refresh")
-        
-        # Beautiful Header
         header_html = """
         <div style="
             background: #6366f1;
@@ -1174,8 +1074,6 @@ else:
         </div>
         """
         st.markdown(header_html, unsafe_allow_html=True)
-        
-        # Join by Code - Enhanced container
         join_card = """
            <div style="
             background: #ffffff;
@@ -1224,8 +1122,6 @@ else:
                     st.error("Invalid or closed auction code.")
 
         st.markdown("---")
-        
-        # Enhanced Auction Feed Header
         feed_header = """
         <div style="
             text-align: center;
@@ -1266,10 +1162,9 @@ else:
             """
             st.markdown(empty_state, unsafe_allow_html=True)
         else:
-                # Use a grid layout for better density
                 cols = st.columns(2, gap="large") 
                 for i, a in enumerate(auctions):
-                    with cols[i % 2]: # Cycle between 2 columns
+                    with cols[i % 2]: 
                         auction_card_html = f"""
                         <div style="
                             background: #ffffff;
@@ -1283,7 +1178,6 @@ else:
                         st.markdown(auction_card_html, unsafe_allow_html=True)
                         with st.container(border=False):
                             
-                            # Timer logic (unchanged)
                             start = a.get("start_time")
                             duration = a.get("duration_minutes") or 0
                             timer = "Unknown"
@@ -1296,8 +1190,6 @@ else:
                                 remaining = max(0, duration * 60 - elapsed)
                                 mins, secs = divmod(int(remaining), 60)
                                 timer = f"{mins:02d}:{secs:02d}"
-                            
-                            # Product info with image
                             image_bytes = None
                             try:
                                 _, image_bytes = get_product_from_mongo(a.get("product_id"))
@@ -1313,20 +1205,16 @@ else:
                                 
                             with col_info:
                                 st.markdown(f"**{a.get('product_name')}** (`{a.get('auction_code')}`)")
-                                
-                                # Timer Display Logic with color coding
                                 timer_color = "#3498db"
                                 if remaining < 60 and remaining > 0:
                                     timer_color = "#e74c3c"
                                 elif remaining <= 0:
-                                    timer_color = "#95a5a6"  # Grey for ended
+                                    timer_color = "#95a5a6"  
                                 
                                 st.markdown(f"<p style='margin: 0.5rem 0;'><strong>Time Remaining:</strong> <span style='color: {timer_color}; font-weight: bold; font-size: 1.1rem;'>{timer}</span></p>", unsafe_allow_html=True)
                                 
                                 st.metric("Current Bid", f"${a.get('current_bid', a.get('base_price'))}", help=f"Highest Bidder: {a.get('current_bidder', 'No bids yet')}")
                             st.markdown("---")
-                            
-                            # Waiting Room and Join Button
                             waiting_key = f"waiting_{a.get('auction_code')}"
                             joined = st.session_state.get(waiting_key, False)
                             
@@ -1357,15 +1245,14 @@ else:
                                         except Exception as e:
                                             st.error(f"Could not leave waiting room: {e}")
                                         st.rerun()
-                            
-                            # Waiting Room Viewer - use a smaller expander
+                        
                             with st.expander(f"👥 View Waiting Room"):
                                 waiting_users = get_waiting_users(a.get("auction_code"))
                                 if not waiting_users:
                                     st.info("No one in the waiting room yet.")
                                 else:
                                     st.write(f"**{len(waiting_users)} buyers waiting:**")
-                                    # Display users in a dense layout
+                                   
                                     wait_cols = st.columns(6)
                                     for idx, user_info in enumerate(waiting_users):
                                         col_idx = idx % 6
@@ -1378,18 +1265,11 @@ else:
                                                 </div>
                                             """, unsafe_allow_html=True)
                         
-                        # Close auction card div
                         st.markdown("</div>", unsafe_allow_html=True)
 
-
-        # BUYER: Dashboard
     elif role == "Buyer" and page == "Dashboard":
         st.header("📊 My Dashboard")
-        
-        # Get stats
         stats = get_buyer_stats(username)
-        
-        # Display key metrics in cards
         st.subheader("📈 Overview")
         col1, col2, col3, col4 = st.columns(4)
         
@@ -1405,9 +1285,8 @@ else:
         
         st.markdown("---")
         
-        # Recent Wins
         st.subheader("🏆 Recent Wins")
-        won_auctions = stats["won_auctions"][:5]  # Show last 5
+        won_auctions = stats["won_auctions"][:5]  
         
         if not won_auctions:
             st.info("You haven't won any auctions yet. Keep bidding!")
@@ -1441,19 +1320,14 @@ else:
                         st.caption(f"Won on: {closed_at}")
         
         st.markdown("---")
-        
-        # Activity Chart (if you want to add visualization)
         st.subheader("📊 Bidding Activity")
         if stats["total_participated"] > 0:
-            # Simple progress bars
             st.write("**Win Rate**")
             st.progress(stats["win_rate"] / 100)
             st.caption(f"{stats['win_rate']:.1f}% of auctions won")
         else:
             st.info("No bidding activity yet. Start participating in auctions!")
 
-
-    # BUYER: My Purchases
     elif role == "Buyer" and page == "My Purchases":
         st.header("🛍️ My Purchases")
         
@@ -1465,8 +1339,6 @@ else:
         else:
             st.success(f"**Total Purchases: {len(won_auctions)}** | **Total Spent: ${stats['total_spent']:.2f}**")
             st.markdown("---")
-            
-            # Display in grid
             cols = st.columns(2, gap="large")
             for i, auction in enumerate(won_auctions):
                 with cols[i % 2]:
@@ -1495,12 +1367,9 @@ else:
                             st.metric("Purchase Price", f"${final_bid:.2f}")
                             st.caption(f"Won: {auction.get('closed_at', 'N/A')}")
                             
-                            # Show bid count
                             num_bids = len(auction.get("bids", []))
                             st.caption(f"Total Bids: {num_bids}")
 
-
-    # BUYER: Bidding History
     elif role == "Buyer" and page == "Bidding History":
         st.header("📜 My Bidding History")
         
@@ -1517,8 +1386,6 @@ else:
             col3.metric("Lost", stats["total_participated"] - stats["total_won"])
             
             st.markdown("---")
-            
-            # Tabs for won vs lost
             tab_all, tab_won, tab_lost = st.tabs(["All", "Won", "Lost"])
             
             with tab_all:
@@ -1532,7 +1399,6 @@ else:
                         else:
                             final_bid = float(final_bid)
                         
-                        # Get user's bids
                         user_bids = [b for b in auction.get("bids", []) if b.get("bidder") == username]
                         highest_user_bid = max([float(b.get("amount", 0)) if not isinstance(b.get("amount"), Decimal128) 
                                             else float(b.get("amount").to_decimal()) for b in user_bids]) if user_bids else 0
@@ -1578,9 +1444,7 @@ else:
         cursor.close()
         conn.close()
         
-        # Handle auction closure/not found
         if not auction or auction.get('status') == 'closed':
-            # Use a celebratory success box if the user won, or a warning if it just ended
             if auction and auction.get('winner') == username:
                 st.balloons()
                 st.success(f"🎉 Congratulations! You won the auction for **{auction.get('product_name')}** with a final bid of **${auction.get('final_bid')}**!")
@@ -1594,9 +1458,8 @@ else:
                 st.session_state.selected_auction = None
                 st.session_state.cached_auction = None
                 st.rerun()
-            st.stop() # Stop further execution if closed/not found
+            st.stop() 
 
-        # Handle connection failure
         tcp_client = st.session_state.tcp_client
         if not tcp_client.connected:
             success, error = tcp_client.connect(username, auction.get("auction_code"))
@@ -1610,11 +1473,9 @@ else:
                     st.session_state.in_auction_room = False
                     st.session_state.selected_auction = None
                     st.rerun()
-                st.stop() # Stop further execution if connection failed
-            else:
+                st.stop() 
                 st.toast(f"✅ Connected to auction {auction.get('auction_code')}!")
 
-        # Main Auction Room UI with Beautiful Header
         auction_header = f"""
      <div style="
             background: #6366f1;
@@ -1652,7 +1513,6 @@ else:
         current_bid = auction.get("current_bid") or auction.get("base_price")
         current_bidder = auction.get("current_bidder") or "No bids yet"
         
-        # Top-level metrics for quick info with enhanced styling
         col_m1, col_m2, col_m3 = st.columns(3)
         delta_text = ""
         delta_color = "off"
@@ -1661,12 +1521,12 @@ else:
             delta_color = "normal"
         elif current_bidder != "No bids yet":
             delta_text = "Outbid"
-            delta_color = "inverse" # Red delta
+            delta_color = "inverse" 
         else:
             delta_text = "Start Bid"
             delta_color = "off"
         
-        # Enhanced metric cards
+  
         metric_style = """
         <style>
         [data-testid="stMetricValue"] {
@@ -1689,8 +1549,6 @@ else:
         st.markdown("---")
         
         col_image, col_timer_bid = st.columns([1, 2])
-        
-        # Product Image and Info
         with col_image:
          with st.container(border=True):
             image_bytes = None
@@ -1708,10 +1566,8 @@ else:
                 with st.expander("Product Description"):
                     st.write(prod.get('description'))
         
-        # Timer and Bidding Form
         with col_timer_bid:
          with st.container(border=True):
-            # Timer Block (unchanged logic, refined display)
             start_time = auction.get("start_time")
             duration = auction.get("duration_minutes") or 0
             
@@ -1726,7 +1582,6 @@ else:
                 mins, secs = divmod(int(remaining), 60)
                 timer_display = f"{mins:02d}:{secs:02d}"
 
-           # Display Timer prominently with enhanced styling
                 if remaining <= 0:
                     timer_html = f"""
                       <div style="
@@ -1832,26 +1687,22 @@ else:
                     st.session_state.in_auction_room = False
                     st.session_state.selected_auction = None
                     st.session_state.cached_auction = None
-                    st.session_state.pop('current_page', None)  # Reset navigation
+                    st.session_state.pop('current_page', None)  
                     st.success("Left auction room")
                     time.sleep(0.5)
                     st.rerun()
             
             with col_status:
-                # Connection status indicator
                 if tcp_client.connected:
                     st.markdown("🟢 **Connected**")
                 else:
                     st.markdown("🔴 **Disconnected**")
           
-
-    # 8. Admin UI: Bid History (MongoDB)
     elif role == "Admin" and page == "Bid History":
         st.header("📜  Bid History ")
         try:
             client = MongoClient("mongodb+srv://pavankumarbatchu1185_db_user:Bvnspk%401185@cluster0.asbvkak.mongodb.net/")
             db = client["auction_data"]
-            # Use st.cache_data to speed up UI loading if history is large
             @st.cache_data(ttl=60) 
             def load_history():
                 return list(db["auction_history"].find().sort("closed_at", -1))
@@ -1862,9 +1713,9 @@ else:
                 st.info("No completed auction history found.")
             else:
                 for doc in history:
-                    # Use a clean container for each auction history
+                    
                     with st.container(border=True):
-                        # ---- Sanitize values safely ----
+                    
                         product_name = str(doc.get("product_name") or "N/A")
                         auction_code = str(doc.get("auction_code") or "N/A")
 
@@ -1874,7 +1725,7 @@ else:
                         else:
                             closed_at_str = str(closed_at) if closed_at else "N/A"
 
-                        # Final bid formatting
+                       
                         final_bid_raw = doc.get("final_bid")
                         from bson.decimal128 import Decimal128
                         try:
@@ -1887,7 +1738,7 @@ else:
 
                         winner = str(doc.get("winner") or "No Bids")
 
-                        # ---- Styled HTML block (matches your theme & card layout) ----
+                       
                         st.markdown(f"""
                         <div class="bid-card">
                             <div class="bid-title">{product_name}</div>
@@ -1903,7 +1754,7 @@ else:
                         """, unsafe_allow_html=True)
 
                         
-                        # Use an expander for the individual bids
+                        
                         with st.expander("View All Bids"):
                             bids = doc.get("bids", [])
                             if not bids:
@@ -1942,7 +1793,7 @@ else:
                         with st.container(border=True):
                             col_img, col_info, col_controls = st.columns([1, 2, 1])
                             
-                            # Image column
+                          
                             with col_img:
                                 image_bytes = None
                                 try:
@@ -1954,21 +1805,21 @@ else:
                                 else:
                                     st.image("https://via.placeholder.com/100x75.png?text=Item", width=100)
                             
-                            # Info column
+                           
                             with col_info:
                                 st.markdown(f"**{a.get('product_name')}** (`{a.get('auction_code')}`)")
                                 st.markdown(f"Status: <span style='color: #2ecc71;'>**ACTIVE**</span>", unsafe_allow_html=True)
                                 st.write(f"Base Price: **${a.get('base_price')}**")
                                 st.metric("Current Bid", f"${a.get('current_bid', a.get('base_price'))}", help=f"Highest Bidder: {a.get('current_bidder', 'No bids yet')}")
                             
-                            # Controls column
+                           
                             with col_controls:
-                                # Show Waiting Room in a small expander
+                               
                                 with st.expander(f"👥 Waitlist"):
                                     waiting_users = get_waiting_users(a.get('auction_code'))
                                     if waiting_users:
                                         st.write(f"**{len(waiting_users)} buyers waiting**")
-                                        # Show only first few users
+                                    
                                         for user_info in waiting_users[:3]:
                                             st.caption(f"- {user_info['username']}")
                                         if len(waiting_users) > 3:
@@ -1977,7 +1828,7 @@ else:
                                         st.caption("No buyers waiting yet.")
 
                                 st.markdown("---")
-                                # Manual end auction button (logic unchanged, UI cleaner)
+                               
                                 end_key = f"confirm_end_{a['id']}"
                                 if not st.session_state.get(end_key, False):
                                     if st.button(f"🛑 End Early", key=f"end_{a['id']}", type="secondary", use_container_width=True):
@@ -1988,7 +1839,7 @@ else:
                                     col_yes, col_no = st.columns(2)
                                     with col_yes:
                                         if st.button("✅ YES", key=f"confirm_yes_{a['id']}", type="primary", use_container_width=True):
-                                            # Logic to close auction early (unchanged)
+                                          
                                             try:
                                                 conn = get_db_connection()
                                                 cursor = conn.cursor()
@@ -2005,7 +1856,7 @@ else:
                                                 """, (final_bid, winner, a["id"]))
                                                 conn.commit()
                                                 
-                                                # Finalize in MongoDB
+                                               
                                                 finalize_mongo_auction(a["product_id"], winner, float(final_bid))
                                                 products_col.update_one(
                                                     {"_id": ObjectId(a["product_id"])},
@@ -2017,11 +1868,11 @@ else:
                                                     }}
                                                 )
                                                 
-                                                # Delete from MySQL
+                                               
                                                 cursor.execute("DELETE FROM auctions WHERE id=%s", (a["id"],))
                                                 conn.commit()
                                                 
-                                                # Clear waiting room
+                                            
                                                 clear_waiting_room(a.get("auction_code"))
                                                 
                                                 st.success(f"✅ Auction ended! Winner: {winner}, Final Bid: ${final_bid}")
@@ -2056,11 +1907,7 @@ else:
     # SELLER: Dashboard
     elif role == "Seller" and page == "Dashboard":
         st.header("📊 Seller Dashboard")
-        
-        # Get stats
         stats = get_seller_stats(username)
-        
-        # Key Metrics
         st.subheader("📈 Business Overview")
         col1, col2, col3, col4 = st.columns(4)
         
@@ -2075,8 +1922,6 @@ else:
             st.metric("Avg Sale Price", f"${stats['avg_price']:.2f}")
         
         st.markdown("---")
-        
-        # Auction Status
         st.subheader("🔨 Auction Status")
         col1, col2, col3 = st.columns(3)
         
@@ -2086,7 +1931,6 @@ else:
         
         st.markdown("---")
         
-        # Product Status Breakdown
         st.subheader("📦 Inventory Status")
         
         col1, col2, col3, col4 = st.columns(4)
@@ -2094,8 +1938,6 @@ else:
         col2.metric("In Auction", stats["in_auction_products"], help="Currently being auctioned")
         col3.metric("Sold", stats["sold_products"], help="Successfully sold")
         col4.metric("Total", stats["total_products"])
-        
-        # Progress bar for sold products
         if stats["total_products"] > 0:
             sold_percentage = (stats["sold_products"] / stats["total_products"]) * 100
             st.write("**Sales Progress**")
@@ -2104,7 +1946,6 @@ else:
         
         st.markdown("---")
         
-        # Recent Sales
         st.subheader("💰 Recent Sales")
         sold_products = list(products_col.find({"seller": username, "status": "sold"}).sort("sold_at", -1).limit(5))
         

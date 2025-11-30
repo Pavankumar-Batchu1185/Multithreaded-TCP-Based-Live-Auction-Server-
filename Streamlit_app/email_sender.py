@@ -9,16 +9,13 @@ import mysql.connector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
-# ------------------------------
-# ENV VARS
-# ------------------------------
-# Primary SMTP credentials (for all emails)
-SMTP_USER = os.getenv("SMTP_USER")          # Your main email for sending
+
+SMTP_USER = os.getenv("SMTP_USER")          #  main email for sending
 SMTP_PASS = os.getenv("SMTP_PASS")          # App password
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 
-# MySQL Connection (same as your other files)
+
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
     "user": os.getenv("DB_USER", "root"),
@@ -26,17 +23,9 @@ DB_CONFIG = {
     "database":  "auction_system"
 }
 
-# Small pause between emails to avoid rate-limits (seconds)
 EMAIL_SEND_DELAY = float(os.getenv("EMAIL_SEND_DELAY", "0.5"))
 
-# ------------------------------
-# Helper: send a single email
-# ------------------------------
 def send_email(to_email: str, subject: str, body: str) -> bool:
-    """
-    Sends an email to the specified recipient.
-    Returns True if successful, False otherwise.
-    """
     if not SMTP_USER or not SMTP_PASS:
         logging.error("❌ SMTP credentials not configured. Set SMTP_USER and SMTP_PASS env vars.")
         return False
@@ -72,19 +61,11 @@ def send_email(to_email: str, subject: str, body: str) -> bool:
         logging.exception(f"❌ Failed to send email to {to_email}: {e}")
         return False
 
-# --------------------------------------------------------
-# Get buyer emails from database
-# --------------------------------------------------------
 def get_buyer_emails():
-    """
-    Fetches all buyer emails from MySQL users table.
-    Returns list of email addresses.
-    """
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
         cursor = conn.cursor(dictionary=True)
         
-        # Get all buyers with valid email addresses
         cursor.execute("""
             SELECT email FROM users 
             WHERE role='Buyer' 
@@ -96,7 +77,6 @@ def get_buyer_emails():
         cursor.close()
         conn.close()
         
-        # Extract email addresses
         emails = [b["email"] for b in buyers if b.get("email")]
         logging.info(f"📧 Found {len(emails)} buyer email(s)")
         return emails
@@ -105,14 +85,7 @@ def get_buyer_emails():
         logging.exception(f"❌ Failed to fetch buyer emails: {e}")
         return []
 
-# --------------------------------------------------------
-# EMAIL: Notify buyers (auction started)
-# --------------------------------------------------------
 def notify_buyers(product_name, auction_code, start_time, duration_minutes, meet_link, base_price):
-    """
-    Sends auction-start emails to all registered buyers.
-    Returns a tuple: (success_count, total_count)
-    """
     subject = f"🔔 New Auction Alert: {product_name} ({auction_code})"
     
     body = f"""
@@ -151,8 +124,6 @@ def notify_buyers(product_name, auction_code, start_time, duration_minutes, meet
 </body>
 </html>
 """
-
-    # Get all buyer emails
     buyer_emails = get_buyer_emails()
     
     if not buyer_emails:
@@ -172,14 +143,7 @@ def notify_buyers(product_name, auction_code, start_time, duration_minutes, meet
     logging.info(f"✅ Notification complete: {success}/{total} emails sent for auction {auction_code}")
     return success, total
 
-# --------------------------------------------------------
-# EMAIL: Notify seller (auction finished)
-# --------------------------------------------------------
 def notify_seller(seller_email: str, product_name: str, winner: str, final_bid: float):
-    """
-    Sends auction result email to the seller.
-    Returns True if successful, False otherwise.
-    """
     if not seller_email:
         logging.warning("⚠️ No seller email provided")
         return False
@@ -221,14 +185,9 @@ def notify_seller(seller_email: str, product_name: str, winner: str, final_bid: 
     
     return result
 
-# --------------------------------------------------------
-# EMAIL: Notify winner (auction won)
-# --------------------------------------------------------
+
 def notify_winner(winner_email: str, product_name: str, final_bid: float, auction_code: str):
-    """
-    Sends congratulations email to the auction winner.
-    Returns True if successful, False otherwise.
-    """
+ 
     if not winner_email:
         logging.warning("⚠️ No winner email provided")
         return False
@@ -273,14 +232,8 @@ def notify_winner(winner_email: str, product_name: str, final_bid: float, auctio
     
     return result
 
-# --------------------------------------------------------
-# Helper: Quick test to validate SMTP credentials
-# --------------------------------------------------------
 def test_email_config(test_recipient: str = None):
-    """
-    Tests the email configuration by sending a test email.
-    If test_recipient is not provided, uses SMTP_USER as recipient.
-    """
+  
     recipient = test_recipient or SMTP_USER
     
     if not recipient:
@@ -309,13 +262,11 @@ def test_email_config(test_recipient: str = None):
     
     return result
 
-# --------------------------------------------------------
-# Main: Run test if executed directly
-# --------------------------------------------------------
+
 if __name__ == "__main__":
     print("🧪 Testing email configuration...\n")
     
-    # Check if credentials are set
+    
     if not SMTP_USER or not SMTP_PASS:
         print("❌ ERROR: SMTP credentials not set!")
         print("\nPlease set these environment variables:")
@@ -326,7 +277,6 @@ if __name__ == "__main__":
     else:
         print(f"📧 SMTP User: {SMTP_USER}")
         print(f"🔧 SMTP Server: {SMTP_SERVER}:{SMTP_PORT}\n")
-        
-        # Run test
+
         test_email = input("Enter email to test (or press Enter to use SMTP_USER): ").strip()
         test_email_config(test_email if test_email else None)
