@@ -10,7 +10,8 @@ import time
 # Assuming these imports work and the functions are defined elsewhere or correctly imported
 from auction_listener import finalize_mongo_auction
 from auction_listener import get_product_from_mongo, save_product_to_mongo, products_col
-from auction_listener import add_to_waiting_room, remove_from_waiting_room, get_waiting_users, clear_waiting_room
+from auction_listener import add_to_waiting_room, remove_from_waiting_room, get_waiting_users, clear_waiting_room,get_seller_stats,get_buyer_stats
+from auction_listener import get_closed_auctions
 from bson import ObjectId
 import socket
 import random
@@ -41,6 +42,20 @@ def get_db_connection():
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+import re
+
+def is_valid_email(email):
+    """
+    Validates email format using regex.
+    Returns True if valid, False otherwise.
+    """
+    if not email:
+        return False
+    
+    # Basic email regex pattern
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
 def user_exists(username):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -59,21 +74,23 @@ def validate_user(username, password):
         return user
     return None
 
-# register_user FUNCTION
 def register_user(username, password, role, email=None):
     if user_exists(username):
         st.error("Username already exists.")
         return False
     
-    # Use provided email if available, otherwise generate an alias.
-    final_email = email.strip() if email else ""
+    # ✅ Email is REQUIRED
+    if not email or not email.strip():
+        st.error("❌ Email address is required.")
+        return False
     
-    if not final_email:
-        if role == "Buyer":
-          final_email = f"v.n.s.pavankumar.batchu+{username}@gmail.com"
-        elif role == "Seller":
-            final_email = f"pavankumar.batchu23+{username}@vit.edu"
-
+    final_email = email.strip()
+    
+    # ✅ Validate email format using regex
+    if not is_valid_email(final_email):
+        st.error("❌ Please provide a valid email address (e.g., user@example.com).")
+        return False
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -82,7 +99,7 @@ def register_user(username, password, role, email=None):
     )
     conn.commit()
     conn.close()
-    st.success("Registration successful. Please login.")
+    st.success("✅ Registration successful. Please login.")
     return True
 
 def is_server_running():
@@ -234,13 +251,7 @@ def get_active_auctions():
     conn.close()
     return rows or []
 
-def get_closed_auctions():
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM auctions WHERE status='closed' ORDER BY end_time DESC")
-    rows = cursor.fetchall()
-    conn.close()
-    return rows or []
+
 
 def get_seller_auctions(username):
     conn = get_db_connection()
@@ -355,15 +366,127 @@ def load_css_file(filename="index.css"):
         st.error(f"Error reading CSS file: {e}")
         return ""
 
-custom_css = load_css_file("index.css")
-st.markdown(custom_css, unsafe_allow_html=True)
-# 1. Page Setup
-st.set_page_config(page_title="Live Auction Dashboard", layout="wide", initial_sidebar_state="expanded",menu_items={'About': 'A multi-threaded TCP-based live auction system UI.'})
-# 2. Custom CSS for a Professional Look (Dark Mode Palette)
+def get_all_users():
+    """Get all users from database"""
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT id, username, role, email, created_at FROM users ORDER BY created_at DESC")
+    users = cursor.fetchall()
+    conn.close()
+    return users
 
+def delete_user(user_id):
+    """Delete a user by ID"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE id=%s", (user_id,))
+    conn.commit()
+    conn.close()
+
+def display_product_image_with_zoom(product_id, caption="Product Image", thumbnail_width=150):
+    try:
+        # Get product and image from MongoDB
+        product, image_bytes = get_product_from_mongo(product_id)
+        
+        if image_bytes:
+            # Create two columns: thumbnail and zoom button
+            col_thumb, col_zoom = st.columns([3, 1])
+            
+            with col_thumb:
+                # Show thumbnail
+                st.image(image_bytes, caption=caption, width=thumbnail_width)
+            
+            with col_zoom:
+                # Create unique key for this product's zoom
+                zoom_key = f"zoom_modal_{product_id}"
+                
+                # Toggle button for zoom
+                if st.button("🔍 Zoom", key=f"btn_{product_id}", use_container_width=True):
+                    st.session_state[zoom_key] = not st.session_state.get(zoom_key, False)
+            
+            # Show full-size image in expander if zoom is active
+            if st.session_state.get(zoom_key, False):
+                with st.expander("🖼️ Full Size Image", expanded=True):
+                    st.image(image_bytes, use_container_width=True)
+                    
+                    # Close button
+                    if st.button("❌ Close", key=f"close_{product_id}", use_container_width=True):
+                        st.session_state[zoom_key] = False
+                        st.rerun()
+        else:
+            # No image available - show placeholder
+            st.image(
+                "https://via.placeholder.com/300x225.png?text=No+Image+Available", 
+                caption=caption,
+                width=thumbnail_width
+            )
+        
+        return product, image_bytes
+        
+    except Exception as e:
+        st.error(f"Error loading product image: {e}")
+        st.image(
+            "https://via.placeholder.com/300x225.png?text=Error+Loading+Image", 
+            caption="Error",
+            width=thumbnail_width
+        )
+        return None, None
+
+
+def admin_add_user(username, password, role, email=None):
+    """Admin function to add a user"""
+    if user_exists(username):
+        return False, "Username already exists."
+    
+    # ✅ Email is REQUIRED
+    if not email or not email.strip():
+        return False, "Email address is required."
+    
+    final_email = email.strip()
+    
+    # ✅ Validate email format
+    if "@" not in final_email or "." not in final_email:
+        return False, "Invalid email format."
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO users (username, password_hash, role, email) VALUES (%s, %s, %s, %s)",
+        (username, hash_password(password), role, final_email)
+    )
+    conn.commit()
+    conn.close()
+    return True, "User added successfully!"
+
+custom_css = load_css_file("index.css")
+# 1. Page Setup
+st.set_page_config(page_title="BidVerse", layout="wide", initial_sidebar_state="expanded", menu_items={'About': 'A multi-threaded TCP-based live auction system UI.'})
+
+# Load CSS once
 st.markdown(custom_css, unsafe_allow_html=True)
-st.markdown("<h1 style='text-align: center; color: #3498db;'> 🚀 Live Auction Management Console</h1>", unsafe_allow_html=True)
-#st.markdown("---") # Replaced st.divider() with st.markdown("---") for better visual consistency
+
+# Beautiful Animated Header
+header_html = """
+<div style="text-align: center; padding: 2rem 0; margin-bottom: 2rem;">
+    <h1 style="
+        font-size: 2.5rem;
+        font-weight: 800;
+        color: #1f2937;
+        margin: 0;
+    ">
+        🚀 BidVerse
+    </h1>
+    <p style="
+        color: #4b5563;
+        font-size: 1.1rem;
+        margin-top: 0.5rem;
+        font-weight: 400;
+    ">
+        Real-time bidding • Secure transactions • Live updates
+    </p>
+</div>
+"""
+st.markdown(header_html, unsafe_allow_html=True)
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -380,38 +503,101 @@ if not st.session_state.logged_in:
     col_login_spacer, col_login, col_reg, col_login_spacer_end = st.columns([1, 2, 2, 1])
     
     with col_login:
-        with st.container(border=True): # Use a container for visual separation
-            st.markdown("## 🔑 Login")
-            st.markdown("<p style='color:black;'>Access your auction dashboard.</p>", unsafe_allow_html=True)
-            username = st.text_input("Username", key="login_user", placeholder="Enter your username")
-            password = st.text_input("Password", type="password", key="login_pass", placeholder="Enter your password")
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Login", use_container_width=True, type="primary"):
-                user = validate_user(username, password)
-                if user:
-                    st.session_state.logged_in = True
-                    st.session_state.role = user["role"]
-                    st.session_state.username = user["username"]
-                    st.toast(f"Welcome {user['username']} ({user['role']})!") # Use toast instead of st.success
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
+        login_card = """
+         <div style="
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 2rem;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        ">
+            <div style="text-align: center; margin-bottom: 1.5rem;">
+                <div style="
+                    width: 60px;
+                    height: 60px;
+                    background: #6366f1;
+                    border-radius: 50%;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 2rem;
+                    margin-bottom: 1rem;
+                ">🔑</div>
+                <h2 style="
+                    margin: 0;
+                    color: #1f2937;
+                    font-size: 1.75rem;
+                    font-weight: 700;
+                ">Login</h2>
+                <p style="color: #6b7280; margin-top: 0.5rem;">Access your auction dashboard</p>
+            </div>
+        </div>
+        """
+        st.markdown(login_card, unsafe_allow_html=True)
+        username = st.text_input("Username", key="login_user", placeholder="Enter your username")
+        password = st.text_input("Password", type="password", key="login_pass", placeholder="Enter your password")
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Login", use_container_width=True, type="primary"):
+            user = validate_user(username, password)
+            if user:
+                st.session_state.logged_in = True
+                st.session_state.role = user["role"]
+                st.session_state.username = user["username"]
+                st.toast(f"Welcome {user['username']} ({user['role']})!") # Use toast instead of st.success
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
     
     with col_reg:
-        with st.container(border=True): # Use a container for visual separation
-            st.markdown("## 📝 Register")
-            st.markdown("<p style='color:black;'>Join the platform as a Buyer, Seller, or Admin.</p>", unsafe_allow_html=True)
-            new_user = st.text_input("Username", key="reg_user", placeholder="Choose a username")
-            new_pass = st.text_input("Password", type="password", key="reg_pass", placeholder="Choose a strong password")
-            new_email = st.text_input("Email (Optional)", key="reg_email", placeholder="Enter your email for notifications")
-            role = st.selectbox("Role", ["Admin", "Seller", "Buyer"], index=2)
-            if st.button("Register", use_container_width=True):
-                if new_user and new_pass:
-                    if register_user(new_user, new_pass, role, new_email):
-                        pass
-                else:
-                    st.warning("Please fill all required fields (Username, Password).")
-
+        register_card = """
+        <div style="
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 2rem;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        ">
+            <div style="text-align: center; margin-bottom: 1.5rem;">
+                <div style="
+                    width: 60px;
+                    height: 60px;
+                    background: #3b82f6;
+                    border-radius: 50%;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 2rem;
+                    margin-bottom: 1rem;
+                ">📝</div>
+                <h2 style="
+                    margin: 0;
+                    color: #1f2937;
+                    font-size: 1.75rem;
+                    font-weight: 700;
+                ">Register</h2>
+                <p style="color: #6b7280; margin-top: 0.5rem;">Join as Buyer, Seller, or Admin</p>
+            </div>
+        </div>
+        """
+        st.markdown(register_card, unsafe_allow_html=True)
+        new_user = st.text_input("Username", key="reg_user", placeholder="Choose a username")
+        new_pass = st.text_input("Password", type="password", key="reg_pass", placeholder="Choose a strong password")
+        new_email = st.text_input(
+        "Email *", 
+        key="reg_email", 
+        placeholder="your.email@example.com",
+        help="Required for all notifications"
+        )
+        role = st.selectbox("Role", ["Admin", "Seller", "Buyer"], index=2)
+        if st.button("Register", use_container_width=True):
+            # ✅ Validate all required fields
+            if not new_user or not new_pass or not new_email:
+                st.error("❌ Please fill all required fields (Username, Password, Email).")
+            elif "@" not in new_email or "." not in new_email:
+                st.error("❌ Please provide a valid email address.")
+            else:
+                if register_user(new_user, new_pass, role, new_email):
+                    pass
 # AUTHENTICATED UI
 else:
     role = st.session_state.role
@@ -419,27 +605,86 @@ else:
 
     # 2. Refined Sidebar
     with st.sidebar:
-        st.markdown(f"## 👤 {username}")
-        st.markdown(f"**Role:** <span style='color:  green;'>{role}</span>", unsafe_allow_html=True)
+        sidebar_header = f"""
+        <div style="
+            background: #6366f1;
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        ">
+            <div style="
+                width: 80px;
+                height: 80px;
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 50%;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 2.5rem;
+                margin-bottom: 1rem;
+                border: 2px solid rgba(255, 255, 255, 0.3);
+            ">👤</div>
+            <h3 style="
+                color: white;
+                margin: 0;
+                font-size: 1.5rem;
+                font-weight: 700;
+            ">{username}</h3>
+            <div style="
+                display: inline-block;
+                padding: 6px 16px;
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 20px;
+                margin-top: 0.5rem;
+                color: white;
+                font-weight: 600;
+                font-size: 0.9rem;
+            ">{role}</div>
+        </div>
+        """
+        st.markdown(sidebar_header, unsafe_allow_html=True)
 
+       
         # Navigation based on role
+                # Navigation based on role
         nav_options = {
-            "Admin": {"Server Control": "⚙️ Server Control", "Bid History": "📜 Bid History", "Closed Auctions": "🔒 Closed Auctions"},
-            "Seller": {"Products": "📦 Product Catalog", "My Auctions": "🔨 My Active Auctions"},
-            "Buyer": {"Active Auctions": "💰 Live Auctions"}
+            "Admin": {
+                "Server Control": "⚙️ Server Control", 
+                "User Management": "👥 User Management",
+                "Live Auctions": "🔴 Live Auctions",
+                "Closed Auctions": "🔒 Closed Auctions",
+                "Bid History": "📜 Bid History"
+            },
+            "Seller": {
+                "Dashboard": "📊 Dashboard",           # NEW
+                "Products": "📦 Product Catalog", 
+                "My Auctions": "🔨 My Active Auctions"
+            },
+            "Buyer": {
+                "Dashboard": "📊 Dashboard",           # NEW
+                "Active Auctions": "💰 Live Auctions",
+                "My Purchases": "🛍️ My Purchases",    # NEW
+                "Bidding History": "📜 Bid History"    # NEW
+            }
         }
         
         # Determine the user's page options and select the first one by default
         role_pages = nav_options.get(role, {})
         page_keys = list(role_pages.keys())
         
-        # Add a custom styling to the radio buttons to make them look more like tabs/links
-        page = st.radio("Go to:", 
-                        options=page_keys,
-                        format_func=lambda x: role_pages[x],
-                        index=page_keys.index(st.session_state.get('current_page', page_keys[0])),
-                        key='current_page')
-        
+        st.header('📍 Navigation')
+
+        page = st.radio(
+            "Navigation:",  # This label will now be hidden by the markdown above
+            options=page_keys,
+            format_func=lambda x: role_pages[x],
+            index=page_keys.index(st.session_state.get('current_page', page_keys[0])),
+            key='current_page',
+            label_visibility="collapsed"  # Hide the default label
+        )
+                
         st.markdown("<br><br><br>", unsafe_allow_html=True) # Push to bottom
         if st.button("🚪 Logout", use_container_width=True, type="secondary"):
             cleanup_tcp_client()
@@ -512,16 +757,12 @@ else:
                 with cols[i % 3]: # Cycle through the columns
                     with st.container(border=True):
                         st.markdown(f"### {p.get('name')}", unsafe_allow_html=True)
-                        image_bytes = None
-                        try:
-                            _, image_bytes = get_product_from_mongo(str(p["_id"]))
-                        except Exception:
-                            pass
-
-                        if image_bytes:
-                            st.image(image_bytes, caption=p.get('name'), use_container_width=True)
-                        else:
-                            st.image("https://via.placeholder.com/200x150.png?text=No+Image", use_container_width=True)
+                          # Use the zoom function instead of direct image display
+                        display_product_image_with_zoom(
+                            str(p["_id"]), 
+                            caption=p.get('name'), 
+                            thumbnail_width=200
+                        )
 
                         st.markdown(f"<p style='font-size: 1.2rem;'>*Base Price:* **<span style='color: #f39c12;'>${p.get('base_price', 'N/A')}</span>**</p>", unsafe_allow_html=True)
                         st.write(f"Description: {p.get('description', '')[:50]}...")
@@ -580,16 +821,84 @@ else:
     # 4. Admin UI: Server Control
     elif role == "Admin" and page == "Server Control":
         st.header("⚙️ Auction Server Control Panel")
+        
+        server_status_html = """
+        <div style="
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 2rem;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+        ">
+        """
+        st.markdown(server_status_html, unsafe_allow_html=True)
+        
         col_status, col_button = st.columns([3, 1])
+        server_running = is_server_running()
 
-        if is_server_running():
-            col_status.metric(label="Server Status", value="ACTIVE", delta="Running")
+        if server_running:
+            status_card = """
+             <div style="
+                background: #10b981;
+                padding: 1.5rem;
+                border-radius: 12px;
+                color: white;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            ">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div style="
+                        width: 50px;
+                        height: 50px;
+                        background: rgba(255, 255, 255, 0.2);
+                        border-radius: 50%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 1.5rem;
+                    ">✅</div>
+                    <div>
+                        <div style="font-size: 0.9rem; opacity: 0.9;">Server Status</div>
+                        <div style="font-size: 1.8rem; font-weight: 700;">ACTIVE</div>
+                        <div style="font-size: 0.85rem; opacity: 0.9;">Running smoothly</div>
+                    </div>
+                </div>
+            </div>
+            """
+            col_status.markdown(status_card, unsafe_allow_html=True)
             with col_button:
                 if st.button("🛑 Stop Server", type="secondary", use_container_width=True):
                     kill_server()
                     st.rerun()
         else:
-            col_status.metric(label="Server Status", value="INACTIVE", delta="- Not Running")
+            status_card = """
+           <div style="
+                background: #ef4444;
+                padding: 1.5rem;
+                border-radius: 12px;
+                color: white;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            ">
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <div style="
+                        width: 50px;
+                        height: 50px;
+                        background: rgba(255, 255, 255, 0.2);
+                        border-radius: 50%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 1.5rem;
+                    ">⏸️</div>
+                    <div>
+                        <div style="font-size: 0.9rem; opacity: 0.9;">Server Status</div>
+                        <div style="font-size: 1.8rem; font-weight: 700;">INACTIVE</div>
+                        <div style="font-size: 0.85rem; opacity: 0.9;">Not Running</div>
+                    </div>
+                </div>
+            </div>
+            """
+            col_status.markdown(status_card, unsafe_allow_html=True)
             with col_button:
                 if st.button("🚀 Start Server", type="primary", use_container_width=True):
                     if not SERVER_EXE.exists():
@@ -602,6 +911,8 @@ else:
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to start server: {e}")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
 
     # 5. Admin UI: Closed Auctions
     elif role == "Admin" and page == "Closed Auctions":
@@ -638,17 +949,267 @@ else:
                             if prod and prod.get('description'):
                                 st.caption(f"Description: {prod.get('description')}")
 
+    # Admin UI: Live Auctions Monitor
+    elif role == "Admin" and page == "Live Auctions":
+        st_autorefresh(interval=5000, key="admin_live_refresh")
+        
+        st.header("🔴 Live Auctions Monitor")
+        
+        active_auctions = get_active_auctions()
+        
+        if not active_auctions:
+            st.info("No active auctions at the moment.")
+        else:
+            st.success(f"**{len(active_auctions)}** active auction(s) running")
+            
+            for a in active_auctions:
+                with st.container(border=True):
+                    col_img, col_info, col_stats = st.columns([1, 2, 1])
+                    
+                    # Image
+                    with col_img:
+                        try:
+                            _, image_bytes = get_product_from_mongo(a.get("product_id"))
+                            if image_bytes:
+                                st.image(image_bytes, width=120)
+                            else:
+                                st.image("https://via.placeholder.com/120x90.png?text=Item", width=120)
+                        except:
+                            st.image("https://via.placeholder.com/120x90.png?text=Item", width=120)
+                    
+                    # Info
+                    with col_info:
+                        st.markdown(f"### {a.get('product_name')}")
+                        st.markdown(f"**Code:** `{a.get('auction_code')}`")
+                        st.markdown(f"**Seller:** {a.get('created_by')}")
+                        
+                        # Timer
+                        start = a.get("start_time")
+                        duration = a.get("duration_minutes") or 0
+                        if start:
+                            if isinstance(start, str): 
+                                start = datetime.fromisoformat(start)
+                            start_utc = start.replace(tzinfo=timezone.utc)
+                            now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+                            elapsed = (now_utc - start_utc).total_seconds()
+                            remaining = max(0, duration * 60 - elapsed)
+                            mins, secs = divmod(int(remaining), 60)
+                            timer = f"{mins:02d}:{secs:02d}"
+                            
+                            if remaining < 60:
+                                st.error(f"⏱️ Time Remaining: **{timer}**")
+                            else:
+                                st.info(f"⏱️ Time Remaining: **{timer}**")
+                    
+                    # Stats
+                    with col_stats:
+                        st.metric("Current Bid", f"${a.get('current_bid', a.get('base_price'))}")
+                        st.metric("Base Price", f"${a.get('base_price')}")
+                        st.caption(f"Highest Bidder: **{a.get('current_bidder', 'No bids yet')}**")
+                    
+                    # Waiting Room
+                    with st.expander(f"👥 Waiting Room ({a.get('auction_code')})"):
+                        waiting_users = get_waiting_users(a.get('auction_code'))
+                        if waiting_users:
+                            st.write(f"**{len(waiting_users)} buyer(s) waiting:**")
+                            cols = st.columns(4)
+                            for idx, user_info in enumerate(waiting_users):
+                                with cols[idx % 4]:
+                                    st.caption(f"• {user_info['username']}")
+                        else:
+                            st.info("No buyers in waiting room")
+
+    # Admin UI: User Management
+  # Admin UI: User Management
+    elif role == "Admin" and page == "User Management":
+        st.header("👥 User Management")
+        
+        # Add User Section
+        st.subheader("➕ Add New User")
+        with st.expander("Add User Form", expanded=False):
+            with st.form("admin_add_user_form", clear_on_submit=True):
+                col1, col2 = st.columns(2)
+                with col1:
+                    new_username = st.text_input("Username *", placeholder="john_doe")
+                    new_password = st.text_input("Password *", type="password", placeholder="Enter password")
+                with col2:
+                    new_role = st.selectbox("Role *", ["Buyer", "Seller", "Admin"])
+                    new_email = st.text_input("Email *", placeholder="user@example.com")  # ✅ Required
+                
+                submitted = st.form_submit_button("➕ Add User", type="primary", use_container_width=True)
+                
+                if submitted:
+                    # ✅ Validate all fields including email
+                    if not new_username or not new_password or not new_email:
+                        st.error("❌ All fields are required (Username, Password, Email, Role)!")
+                    elif "@" not in new_email or "." not in new_email:
+                        st.error("❌ Please provide a valid email address.")
+                    else:
+                        success, message = admin_add_user(new_username, new_password, new_role, new_email)
+                        if success:
+                            st.success(message)
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(message)
+        
+        # List All Users
+        st.subheader("📋 All Users")
+        users = get_all_users()
+        
+        if not users:
+            st.info("No users found in the system.")
+        else:
+            # Add search/filter
+            search_term = st.text_input("🔍 Search users", placeholder="Search by username or role...")
+            
+            # Filter users
+            filtered_users = users
+            if search_term:
+                filtered_users = [u for u in users if 
+                                search_term.lower() in u.get('username', '').lower() or 
+                                search_term.lower() in u.get('role', '').lower()]
+            
+            # Display stats
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Users", len(users))
+            col2.metric("Buyers", len([u for u in users if u.get('role') == 'Buyer']))
+            col3.metric("Sellers", len([u for u in users if u.get('role') == 'Seller']))
+            col4.metric("Admins", len([u for u in users if u.get('role') == 'Admin']))
+            
+            st.markdown("---")
+            
+            # Display users in a grid
+            for user in filtered_users:
+                with st.container(border=True):
+                    col_avatar, col_info, col_actions = st.columns([1, 4, 1])
+                    
+                    with col_avatar:
+                        # Avatar
+                        avatar_url = svg_avatar_data_uri(user.get('username', 'U'), size=64)
+                        st.markdown(f"""
+                            <div style="text-align: center;">
+                                <img src="{avatar_url}" style="border-radius: 50%; width: 64px; height: 64px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+                            </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col_info:
+                        st.markdown(f"### {user.get('username')}")
+                        
+                        # Role badge with color
+                        role = user.get('role', 'Unknown')
+                        role_colors = {
+                            'Admin': '#ef4444',
+                            'Seller': '#3b82f6',
+                            'Buyer': '#10b981'
+                        }
+                        role_color = role_colors.get(role, '#6b7280')
+                        
+                        st.markdown(f"""
+                            <span style="
+                                display: inline-block;
+                                padding: 4px 12px;
+                                background: {role_color};
+                                color: white;
+                                border-radius: 12px;
+                                font-size: 0.85rem;
+                                font-weight: 600;
+                            ">{role}</span>
+                        """, unsafe_allow_html=True)
+                        
+                        st.caption(f"📧 Email: {user.get('email', 'N/A')}")
+                        st.caption(f"📅 Created: {user.get('created_at', 'N/A')}")
+                    
+                    with col_actions:
+                        # Prevent deleting yourself or last admin
+                        if user.get('username') == username:
+                            st.warning("You (current user)")
+                        else:
+                            delete_key = f"delete_confirm_{user.get('id')}"
+                            if not st.session_state.get(delete_key, False):
+                                if st.button("🗑️ Delete", key=f"del_{user.get('id')}", type="secondary", use_container_width=True):
+                                    st.session_state[delete_key] = True
+                                    st.rerun()
+                            else:
+                                st.error("Confirm?")
+                                col_yes, col_no = st.columns(2)
+                                with col_yes:
+                                    if st.button("✅", key=f"yes_{user.get('id')}", use_container_width=True):
+                                        try:
+                                            delete_user(user.get('id'))
+                                            st.success(f"User '{user.get('username')}' deleted!")
+                                            st.session_state[delete_key] = False
+                                            time.sleep(1)
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Failed to delete: {e}")
+                                with col_no:
+                                    if st.button("❌", key=f"no_{user.get('id')}", use_container_width=True):
+                                        st.session_state[delete_key] = False
+                                        st.rerun()
+
     # 6. Buyer UI: Active Auctions Listing & Join
     elif role == "Buyer" and page == "Active Auctions" and not st.session_state.get("in_auction_room", False):
         st_autorefresh(interval=10000, key="auction_list_refresh")
-        st.header("💰 Live Auctions")
         
-        # Join by Code - put in a compact container
-        with st.container(border=True):
-            st.subheader("🎯 Join Auction via Code")
-            col_code, col_button = st.columns([3, 1])
-            code_input = col_code.text_input("Enter Auction Code (e.g., AUC-1A2B)", label_visibility="collapsed", placeholder="AUC-XXXX")
-            if col_button.button("Join Now", use_container_width=True, type="primary"):
+        # Beautiful Header
+        header_html = """
+        <div style="
+            background: #6366f1;
+            padding: 2rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            color: white;
+        ">
+            <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">💰</div>
+            <h2 style="
+                color: white;
+                margin: 0;
+                font-size: 2rem;
+                font-weight: 700;
+            ">Live Auctions</h2>
+            <p style="margin: 0.5rem 0 0 0; opacity: 0.95;">Join active auctions and place your bids</p>
+        </div>
+        """
+        st.markdown(header_html, unsafe_allow_html=True)
+        
+        # Join by Code - Enhanced container
+        join_card = """
+           <div style="
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 2rem;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 2rem;
+        ">
+            <div style="text-align: center; margin-bottom: 1.5rem;">
+                <div style="
+                    width: 60px;
+                    height: 60px;
+                    background: #f59e0b;
+                    border-radius: 50%;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 2rem;
+                    margin-bottom: 1rem;
+                ">🎯</div>
+                <h3 style="
+                    margin: 0;
+                    color: #1f2937;
+                    font-size: 1.5rem;
+                    font-weight: 700;
+                ">Join Auction via Code</h3>
+            </div>
+        </div>
+        """
+        st.markdown(join_card, unsafe_allow_html=True)
+        col_code, col_button = st.columns([3, 1])
+        code_input = col_code.text_input("Enter Auction Code (e.g., AUC-1A2B)", label_visibility="collapsed", placeholder="AUC-XXXX")
+        if col_button.button("Join Now", use_container_width=True, type="primary"):
                 conn = get_db_connection()
                 cursor = conn.cursor(dictionary=True)
                 cursor.execute("SELECT * FROM auctions WHERE auction_code=%s AND status='active'", (code_input,))
@@ -663,17 +1224,64 @@ else:
                     st.error("Invalid or closed auction code.")
 
         st.markdown("---")
-        st.subheader("Auction Feed")
+        
+        # Enhanced Auction Feed Header
+        feed_header = """
+        <div style="
+            text-align: center;
+            margin: 2rem 0;
+            padding: 1rem;
+        ">
+            <h3 style="
+                color: #1f2937;
+                font-size: 1.75rem;
+                font-weight: 700;
+                margin: 0;
+            ">🔥 Auction Feed</h3>
+        </div>
+        """
+        st.markdown(feed_header, unsafe_allow_html=True)
+        
         auctions = get_active_auctions()
         
         if not auctions:
-                st.info("No active auctions right now. Please check back later.")
+            empty_state = """
+        <div style="
+                background: #ffffff;
+                border-radius: 12px;
+                padding: 4rem 2rem;
+                text-align: center;
+                border: 1px solid #e5e7eb;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            ">
+                <div style="font-size: 3rem; margin-bottom: 1rem;">🔍</div>
+                <h3 style="
+                    color: #4b5563;
+                    font-size: 1.5rem;
+                    font-weight: 700;
+                    margin: 0;
+                ">No Active Auctions</h3>
+                <p style="color: #6b7280; margin-top: 0.5rem;">Check back later for new auctions</p>
+            </div>
+            """
+            st.markdown(empty_state, unsafe_allow_html=True)
         else:
                 # Use a grid layout for better density
                 cols = st.columns(2, gap="large") 
                 for i, a in enumerate(auctions):
                     with cols[i % 2]: # Cycle between 2 columns
-                        with st.container(border=True):
+                        auction_card_html = f"""
+                        <div style="
+                            background: #ffffff;
+                            border-radius: 12px;
+                            padding: 1.5rem;
+                            border: 1px solid #e5e7eb;
+                            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                            margin-bottom: 1.5rem;
+                        " class="auction-card">
+                        """
+                        st.markdown(auction_card_html, unsafe_allow_html=True)
+                        with st.container(border=False):
                             
                             # Timer logic (unchanged)
                             start = a.get("start_time")
@@ -705,19 +1313,15 @@ else:
                                 
                             with col_info:
                                 st.markdown(f"**{a.get('product_name')}** (`{a.get('auction_code')}`)")
-                                st.metric("Current Bid", f"${a.get('current_bid', a.get('base_price'))}", help=f"Highest Bidder: {a.get('current_bidder', 'No bids yet')}")
                                 
-                                # Use a small alert for the timer
-                                # Timer Display Logic
+                                # Timer Display Logic with color coding
                                 timer_color = "#3498db"
                                 if remaining < 60 and remaining > 0:
-                                     timer_color = "#e74c3c"
+                                    timer_color = "#e74c3c"
                                 elif remaining <= 0:
-                                     timer_color = "#95a5a6" # Grey for ended
-                                else:
-                                     st.caption(f"Time Remaining: **{timer}**")
-                            
-                                st.markdown(f"Time Remaining: <span style='color: {timer_color}; font-weight: bold;'>{timer}</span>", unsafe_allow_html=True)
+                                    timer_color = "#95a5a6"  # Grey for ended
+                                
+                                st.markdown(f"<p style='margin: 0.5rem 0;'><strong>Time Remaining:</strong> <span style='color: {timer_color}; font-weight: bold; font-size: 1.1rem;'>{timer}</span></p>", unsafe_allow_html=True)
                                 
                                 st.metric("Current Bid", f"${a.get('current_bid', a.get('base_price'))}", help=f"Highest Bidder: {a.get('current_bidder', 'No bids yet')}")
                             st.markdown("---")
@@ -773,7 +1377,194 @@ else:
                                                     <p style="font-size: 10px; margin-top: 2px;">{user_info["username"]}</p>
                                                 </div>
                                             """, unsafe_allow_html=True)
+                        
+                        # Close auction card div
+                        st.markdown("</div>", unsafe_allow_html=True)
 
+
+        # BUYER: Dashboard
+    elif role == "Buyer" and page == "Dashboard":
+        st.header("📊 My Dashboard")
+        
+        # Get stats
+        stats = get_buyer_stats(username)
+        
+        # Display key metrics in cards
+        st.subheader("📈 Overview")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Auctions Participated", stats["total_participated"])
+        with col2:
+            st.metric("Auctions Won", stats["total_won"], 
+                    delta=f"{stats['win_rate']:.1f}% Win Rate")
+        with col3:
+            st.metric("Total Spent", f"${stats['total_spent']:.2f}")
+        with col4:
+            st.metric("Avg Bid", f"${stats['avg_bid']:.2f}")
+        
+        st.markdown("---")
+        
+        # Recent Wins
+        st.subheader("🏆 Recent Wins")
+        won_auctions = stats["won_auctions"][:5]  # Show last 5
+        
+        if not won_auctions:
+            st.info("You haven't won any auctions yet. Keep bidding!")
+        else:
+            for auction in won_auctions:
+                with st.container(border=True):
+                    col_img, col_info = st.columns([1, 3])
+                    
+                    with col_img:
+                        try:
+                            _, image_bytes = get_product_from_mongo(auction.get("product_id"))
+                            if image_bytes:
+                                st.image(image_bytes, width=100)
+                            else:
+                                st.image("https://via.placeholder.com/100x75.png?text=Item", width=100)
+                        except:
+                            st.image("https://via.placeholder.com/100x75.png?text=Item", width=100)
+                    
+                    with col_info:
+                        product_name = auction.get("product_name", "Unknown Product")
+                        final_bid = auction.get("final_bid", 0)
+                        if isinstance(final_bid, Decimal128):
+                            final_bid = float(final_bid.to_decimal())
+                        else:
+                            final_bid = float(final_bid)
+                        
+                        closed_at = auction.get("closed_at", "N/A")
+                        
+                        st.markdown(f"### {product_name}")
+                        st.success(f"**Won for: ${final_bid:.2f}**")
+                        st.caption(f"Won on: {closed_at}")
+        
+        st.markdown("---")
+        
+        # Activity Chart (if you want to add visualization)
+        st.subheader("📊 Bidding Activity")
+        if stats["total_participated"] > 0:
+            # Simple progress bars
+            st.write("**Win Rate**")
+            st.progress(stats["win_rate"] / 100)
+            st.caption(f"{stats['win_rate']:.1f}% of auctions won")
+        else:
+            st.info("No bidding activity yet. Start participating in auctions!")
+
+
+    # BUYER: My Purchases
+    elif role == "Buyer" and page == "My Purchases":
+        st.header("🛍️ My Purchases")
+        
+        stats = get_buyer_stats(username)
+        won_auctions = stats["won_auctions"]
+        
+        if not won_auctions:
+            st.info("You haven't purchased any items yet.")
+        else:
+            st.success(f"**Total Purchases: {len(won_auctions)}** | **Total Spent: ${stats['total_spent']:.2f}**")
+            st.markdown("---")
+            
+            # Display in grid
+            cols = st.columns(2, gap="large")
+            for i, auction in enumerate(won_auctions):
+                with cols[i % 2]:
+                    with st.container(border=True):
+                        col_img, col_details = st.columns([1, 2])
+                        
+                        with col_img:
+                            try:
+                                _, image_bytes = get_product_from_mongo(auction.get("product_id"))
+                                if image_bytes:
+                                    st.image(image_bytes, use_container_width=True)
+                                else:
+                                    st.image("https://via.placeholder.com/150x110.png?text=Product", use_container_width=True)
+                            except:
+                                st.image("https://via.placeholder.com/150x110.png?text=Product", use_container_width=True)
+                        
+                        with col_details:
+                            product_name = auction.get("product_name", "Unknown")
+                            final_bid = auction.get("final_bid", 0)
+                            if isinstance(final_bid, Decimal128):
+                                final_bid = float(final_bid.to_decimal())
+                            else:
+                                final_bid = float(final_bid)
+                            
+                            st.markdown(f"### {product_name}")
+                            st.metric("Purchase Price", f"${final_bid:.2f}")
+                            st.caption(f"Won: {auction.get('closed_at', 'N/A')}")
+                            
+                            # Show bid count
+                            num_bids = len(auction.get("bids", []))
+                            st.caption(f"Total Bids: {num_bids}")
+
+
+    # BUYER: Bidding History
+    elif role == "Buyer" and page == "Bidding History":
+        st.header("📜 My Bidding History")
+        
+        stats = get_buyer_stats(username)
+        participated = stats["participated_auctions"]
+        
+        if not participated:
+            st.info("You haven't participated in any auctions yet.")
+        else:
+            # Stats overview
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Participated", stats["total_participated"])
+            col2.metric("Won", stats["total_won"])
+            col3.metric("Lost", stats["total_participated"] - stats["total_won"])
+            
+            st.markdown("---")
+            
+            # Tabs for won vs lost
+            tab_all, tab_won, tab_lost = st.tabs(["All", "Won", "Lost"])
+            
+            with tab_all:
+                for auction in participated:
+                    with st.container(border=True):
+                        product_name = auction.get("product_name", "Unknown")
+                        winner = auction.get("winner", "No Bids")
+                        final_bid = auction.get("final_bid", 0)
+                        if isinstance(final_bid, Decimal128):
+                            final_bid = float(final_bid.to_decimal())
+                        else:
+                            final_bid = float(final_bid)
+                        
+                        # Get user's bids
+                        user_bids = [b for b in auction.get("bids", []) if b.get("bidder") == username]
+                        highest_user_bid = max([float(b.get("amount", 0)) if not isinstance(b.get("amount"), Decimal128) 
+                                            else float(b.get("amount").to_decimal()) for b in user_bids]) if user_bids else 0
+                        
+                        col_info, col_result = st.columns([3, 1])
+                        
+                        with col_info:
+                            st.markdown(f"**{product_name}**")
+                            st.write(f"Your Highest Bid: ${highest_user_bid:.2f}")
+                            st.write(f"Winning Bid: ${final_bid:.2f} by {winner}")
+                        
+                        with col_result:
+                            if winner == username:
+                                st.success("🏆 WON")
+                            else:
+                                st.error("❌ LOST")
+            
+            with tab_won:
+                won_list = [a for a in participated if a.get("winner") == username]
+                if not won_list:
+                    st.info("No wins yet.")
+                else:
+                    for auction in won_list:
+                        st.success(f"🏆 {auction.get('product_name', 'Unknown')}")
+            
+            with tab_lost:
+                lost_list = [a for a in participated if a.get("winner") != username]
+                if not lost_list:
+                    st.info("You've won all your auctions! 🎉")
+                else:
+                    for auction in lost_list:
+                        st.error(f"❌ {auction.get('product_name', 'Unknown')}")
 
     # 7. Buyer UI: Inside Auction Room (Bidding)
     if role == "Buyer" and st.session_state.in_auction_room and st.session_state.selected_auction:
@@ -817,13 +1608,45 @@ else:
             else:
                 st.toast(f"✅ Connected to auction {auction.get('auction_code')}!")
 
-        # Main Auction Room UI
-        st.header(f"🔨 Auction Room — {auction.get('product_name')}")
+        # Main Auction Room UI with Beautiful Header
+        auction_header = f"""
+     <div style="
+            background: #6366f1;
+            padding: 2rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            color: white;
+        ">
+            <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🔨</div>
+            <h2 style="
+                color: white;
+                margin: 0;
+                font-size: 1.75rem;
+                font-weight: 700;
+            ">Auction Room</h2>
+            <p style="
+                margin: 0.5rem 0 0 0;
+                font-size: 1.1rem;
+                opacity: 0.95;
+            ">{auction.get('product_name')}</p>
+            <div style="
+                display: inline-block;
+                padding: 8px 20px;
+                background: rgba(255, 255, 255, 0.2);
+                border-radius: 20px;
+                margin-top: 1rem;
+                font-weight: 600;
+            ">Code: {auction.get('auction_code')}</div>
+        </div>
+        """
+        st.markdown(auction_header, unsafe_allow_html=True)
         
         current_bid = auction.get("current_bid") or auction.get("base_price")
         current_bidder = auction.get("current_bidder") or "No bids yet"
         
-        # Top-level metrics for quick info
+        # Top-level metrics for quick info with enhanced styling
         col_m1, col_m2, col_m3 = st.columns(3)
         delta_text = ""
         delta_color = "off"
@@ -836,6 +1659,23 @@ else:
         else:
             delta_text = "Start Bid"
             delta_color = "off"
+        
+        # Enhanced metric cards
+        metric_style = """
+        <style>
+        [data-testid="stMetricValue"] {
+            font-size: 2rem !important;
+            font-weight: 900 !important;
+        }
+        [data-testid="stMetricLabel"] {
+            font-size: 0.9rem !important;
+            font-weight: 600 !important;
+            opacity: 0.8;
+        }
+        </style>
+        """
+        st.markdown(metric_style, unsafe_allow_html=True)
+        
         col_m1.metric("Current Highest Bid", f"${current_bid}", delta=delta_text, delta_color=delta_color)
         col_m2.metric("Highest Bidder", current_bidder, help="The user currently in the lead.")
         col_m3.metric("Base Price", f"${auction.get('base_price')}")
@@ -880,13 +1720,69 @@ else:
                 mins, secs = divmod(int(remaining), 60)
                 timer_display = f"{mins:02d}:{secs:02d}"
 
-           # Display Timer prominently (using HTML for large font and color)
+           # Display Timer prominently with enhanced styling
                 if remaining <= 0:
-                    st.markdown(f"<h2 style='text-align: center; color: #e74c3c;'>🔒 AUCTION ENDED</h2>", unsafe_allow_html=True)
+                    timer_html = f"""
+                      <div style="
+                        background: #ef4444;
+                        padding: 2rem;
+                        border-radius: 12px;
+                        text-align: center;
+                        color: white;
+                        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                    ">
+                        <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🔒</div>
+                        <h2 style="
+                            color: white;
+                            margin: 0;
+                            font-size: 1.75rem;
+                            font-weight: 700;
+                        ">AUCTION ENDED</h2>
+                    </div>
+                    """
+                    st.markdown(timer_html, unsafe_allow_html=True)
                 elif remaining < 30:
-                    st.markdown(f"<h2 style='text-align: center; color: #e74c3c;'>🔥 LAST CHANCE: {timer_display}</h2>", unsafe_allow_html=True)
+                    timer_html = f"""
+                  <div style="
+                        background: #f59e0b;
+                        padding: 2rem;
+                        border-radius: 12px;
+                        text-align: center;
+                        color: white;
+                        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                    ">
+                        <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">🔥</div>
+                        <h2 style="
+                            color: white;
+                            margin: 0;
+                            font-size: 1.75rem;
+                            font-weight: 700;
+                        ">LAST CHANCE: {timer_display}</h2>
+                    </div>
+                    """
+                    st.markdown(timer_html, unsafe_allow_html=True)
                 else:
-                    st.markdown(f"<h2 style='text-align: center; color: #3498db;'>⏱️ Time Left: {timer_display}</h2>", unsafe_allow_html=True)
+                    timer_html = f"""
+                    <div style="
+                        background: #3b82f6;
+                        padding: 2rem;
+                        border-radius: 12px;
+                        text-align: center;
+                        color: white;
+                        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                    ">
+                        <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">⏱️</div>
+                        <div style="font-size: 0.9rem; opacity: 0.95; margin-bottom: 0.5rem;">Time Remaining</div>
+                        <h2 style="
+                            color: white;
+                            margin: 0;
+                            font-size: 2.25rem;
+                            font-weight: 700;
+                            font-family: 'Courier New', monospace;
+                        ">{timer_display}</h2>
+                    </div>
+                    """
+                    st.markdown(timer_html, unsafe_allow_html=True)
 
             st.markdown("---")
             st.subheader("Place Your Bid")
@@ -922,18 +1818,51 @@ else:
                             st.rerun()
             
             st.markdown("---")
-            if st.button("⬅️ Leave Auction Room", use_container_width=True, type="secondary"):
-                cleanup_tcp_client()
-                st.session_state.in_auction_room = False
-                st.session_state.selected_auction = None
-                st.session_state.cached_auction = None
-                st.rerun()
+            col_leave, col_status = st.columns([2, 1])
+            
+            with col_leave:
+                if st.button("⬅️ Leave Auction Room", use_container_width=True, type="secondary"):
+                    cleanup_tcp_client()
+                    st.session_state.in_auction_room = False
+                    st.session_state.selected_auction = None
+                    st.session_state.cached_auction = None
+                    st.session_state.pop('current_page', None)  # Reset navigation
+                    st.success("Left auction room")
+                    time.sleep(0.5)
+                    st.rerun()
+            
+            with col_status:
+                # Connection status indicator
+                if tcp_client.connected:
+                    st.markdown("🟢 **Connected**")
+                else:
+                    st.markdown("🔴 **Disconnected**")
+            st.markdown("---")
+            col_leave, col_status = st.columns([2, 1])
+            
+            with col_leave:
+                if st.button("⬅️ Leave Auction Room", use_container_width=True, type="secondary"):
+                    cleanup_tcp_client()
+                    st.session_state.in_auction_room = False
+                    st.session_state.selected_auction = None
+                    st.session_state.cached_auction = None
+                    st.session_state.pop('current_page', None)  # Reset navigation
+                    st.success("Left auction room")
+                    time.sleep(0.5)
+                    st.rerun()
+            
+            with col_status:
+                # Connection status indicator
+                if tcp_client.connected:
+                    st.markdown("🟢 **Connected**")
+                else:
+                    st.markdown("🔴 **Disconnected**")
 
     # 8. Admin UI: Bid History (MongoDB)
     elif role == "Admin" and page == "Bid History":
         st.header("📜  Bid History ")
         try:
-            client = MongoClient("mongodb://localhost:27017")
+            client = MongoClient("mongodb+srv://pavankumarbatchu1185_db_user:Bvnspk%401185@cluster0.asbvkak.mongodb.net/")
             db = client["auction_data"]
             # Use st.cache_data to speed up UI loading if history is large
             @st.cache_data(ttl=60) 
@@ -1136,3 +2065,80 @@ else:
                                 st.caption(f"Started: {a.get('start_time')}")
                                 if a.get('end_time'):
                                     st.caption(f"Ended: {a.get('end_time')}")
+
+    # SELLER: Dashboard
+    elif role == "Seller" and page == "Dashboard":
+        st.header("📊 Seller Dashboard")
+        
+        # Get stats
+        stats = get_seller_stats(username)
+        
+        # Key Metrics
+        st.subheader("📈 Business Overview")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Products", stats["total_products"])
+        with col2:
+            st.metric("Products Sold", stats["sold_products"],
+                    delta=f"{stats['success_rate']:.1f}% Success Rate")
+        with col3:
+            st.metric("Total Revenue", f"${stats['total_revenue']:.2f}")
+        with col4:
+            st.metric("Avg Sale Price", f"${stats['avg_price']:.2f}")
+        
+        st.markdown("---")
+        
+        # Auction Status
+        st.subheader("🔨 Auction Status")
+        col1, col2, col3 = st.columns(3)
+        
+        col1.metric("Total Auctions", stats["total_auctions"])
+        col2.metric("Active Now", stats["active_auctions"])
+        col3.metric("Completed", stats["closed_auctions"])
+        
+        st.markdown("---")
+        
+        # Product Status Breakdown
+        st.subheader("📦 Inventory Status")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Available", stats["available_products"], help="Ready to auction")
+        col2.metric("In Auction", stats["in_auction_products"], help="Currently being auctioned")
+        col3.metric("Sold", stats["sold_products"], help="Successfully sold")
+        col4.metric("Total", stats["total_products"])
+        
+        # Progress bar for sold products
+        if stats["total_products"] > 0:
+            sold_percentage = (stats["sold_products"] / stats["total_products"]) * 100
+            st.write("**Sales Progress**")
+            st.progress(sold_percentage / 100)
+            st.caption(f"{sold_percentage:.1f}% of products sold")
+        
+        st.markdown("---")
+        
+        # Recent Sales
+        st.subheader("💰 Recent Sales")
+        sold_products = list(products_col.find({"seller": username, "status": "sold"}).sort("sold_at", -1).limit(5))
+        
+        if not sold_products:
+            st.info("No sales yet. Start auctioning your products!")
+        else:
+            for p in sold_products:
+                with st.container(border=True):
+                    col_img, col_info = st.columns([1, 3])
+                    
+                    with col_img:
+                        try:
+                            _, image_bytes = get_product_from_mongo(str(p["_id"]))
+                            if image_bytes:
+                                st.image(image_bytes, width=100)
+                            else:
+                                st.image("https://via.placeholder.com/100x75.png?text=Item", width=100)
+                        except:
+                            st.image("https://via.placeholder.com/100x75.png?text=Item", width=100)
+                    
+                    with col_info:
+                        st.markdown(f"### {p.get('name')}")
+                        st.success(f"**Sold for: ${p.get('sold_price', 0):.2f}**")
+                        st.caption(f"Buyer: {p.get('sold_to', 'N/A')} | Sold: {p.get('sold_at', 'N/A')}")

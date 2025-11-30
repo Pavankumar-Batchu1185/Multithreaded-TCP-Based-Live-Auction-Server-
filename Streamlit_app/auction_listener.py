@@ -25,7 +25,7 @@ DB_CONFIG = {
     "pool_size": 5
 }
 
-MONGO_URI = "mongodb://localhost:27017"
+MONGO_URI = "mongodb+srv://pavankumarbatchu1185_db_user:Bvnspk%401185@cluster0.asbvkak.mongodb.net/"
 
 # Setup logging 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -116,6 +116,37 @@ def update_current_bid_by_code(new_bid: float, bidder_id: str, auction_code: str
     except Exception as e:
         log.error(f"Error updating bid in MySQL for {auction_code}: {e}")
 
+def get_closed_auctions():
+    """Get closed auctions from MongoDB auction_history"""
+    try:
+        client = MongoClient("mongodb+srv://pavankumarbatchu1185_db_user:Bvnspk%401185@cluster0.asbvkak.mongodb.net/")
+        db = client["auction_data"]
+        history_col = db["auction_history"]
+        
+        # Get all completed auctions, sorted by closed date (newest first)
+        auctions = list(history_col.find().sort("closed_at", -1))
+        
+        # Convert MongoDB docs to match the expected format
+        result = []
+        for doc in auctions:
+            result.append({
+                "id": str(doc.get("_id")),
+                "product_id": doc.get("product_id"),
+                "product_name": doc.get("product_name", "Unknown"),
+                "auction_code": doc.get("auction_code", "N/A"),
+                "base_price": float(doc.get("final_bid", 0)) if doc.get("winner") != "No Bids" else 0,
+                "final_bid": float(doc.get("final_bid", 0)) if isinstance(doc.get("final_bid"), (int, float)) else 0,
+                "winner": doc.get("winner", "No Bids"),
+                "created_by": doc.get("seller", "Unknown"),
+                "end_time": doc.get("closed_at"),
+                "status": "closed"
+            })
+        
+        return result
+    except Exception as e:
+        print(f"Error fetching closed auctions: {e}")
+        return []
+    
 def get_product_id_by_code(auction_code: str):
     try:
         conn = get_db_connection()
@@ -163,12 +194,13 @@ def log_bid_to_mongo(product_id, bidder, bid_value):
 def finalize_mongo_auction(product_id, winner, final_bid):
     try:
         doc = active_col.find_one({"product_id": product_id})
-
         product = products_col.find_one({"_id": ObjectId(product_id)})
 
         # Extract metadata safely
         product_name = product.get("name", "Unknown") if product else "Unknown"
         auction_code = product.get("auction_code", "N/A") if product else "N/A"
+        seller = product.get("seller", "Unknown") if product else "Unknown"  # ✅ ADD THIS
+        
         if doc:
             # sanitize bids and numeric fields
             bids = doc.get("bids", [])
@@ -187,6 +219,7 @@ def finalize_mongo_auction(product_id, winner, final_bid):
             doc["winner"] = str(winner)
             doc["product_name"] = product_name
             doc["auction_code"] = auction_code
+            doc["seller"] = seller  # ✅ ADD THIS
             try:
                 doc["final_bid"] = float(final_bid)
             except Exception:
@@ -196,22 +229,172 @@ def finalize_mongo_auction(product_id, winner, final_bid):
             # insert sanitized doc into history
             history_col.insert_one(doc)
             active_col.delete_one({"product_id": product_id})
-            log.info(f"Moved {product_id} → auction_history")
+            log.info(f"Moved {product_id} → auction_history (Seller: {seller})")
 
-        # remove product binary/image if you want cleanup
-        # delete_product_from_mongo(product_id)
+        # Update product status to sold
         products_col.update_one(
-        {"_id": ObjectId(product_id)},
-        {"$set": {
-            "status": "sold",
-            "sold_to": winner,
-            "sold_price": float(final_bid),  
-            "sold_at": datetime.utcnow()
-        }}
-    )
+            {"_id": ObjectId(product_id)},
+            {"$set": {
+                "status": "sold",
+                "sold_to": winner,
+                "sold_price": float(final_bid),  
+                "sold_at": datetime.utcnow()
+            }}
+        )
     except Exception as e:
         log.exception(f"Error finalizing auction: {e}")
 
+# ============================================
+# BUYER STATISTICS FUNCTIONS
+# ============================================
+
+def get_buyer_stats(username):
+    """Get comprehensive statistics for a buyer"""
+    try:
+        db = mongo_db  # Already connected to Atlas
+        history_col_local = db["auction_history"]
+        
+        # Get all completed auctions where user bid
+        participated_auctions = list(history_col_local.find({
+            "bids.bidder": username
+        }))
+        
+        # Get auctions won
+        won_auctions = list(history_col_local.find({
+            "winner": username
+        }))
+        
+        # Calculate statistics
+        total_participated = len(participated_auctions)
+        total_won = len(won_auctions)
+        
+        # Calculate total spent
+        from bson.decimal128 import Decimal128  # Add this import at top if not there
+        total_spent = 0.0
+        for auction in won_auctions:
+            final_bid = auction.get("final_bid", 0)
+            if isinstance(final_bid, Decimal128):
+                total_spent += float(final_bid.to_decimal())
+            else:
+                total_spent += float(final_bid)
+        
+        # Calculate win rate
+        win_rate = (total_won / total_participated * 100) if total_participated > 0 else 0.0
+        
+        # Get average bid amount
+        all_user_bids = []
+        for auction in participated_auctions:
+            user_bids = [b for b in auction.get("bids", []) if b.get("bidder") == username]
+            for bid in user_bids:
+                amount = bid.get("amount", 0)
+                if isinstance(amount, Decimal128):
+                    all_user_bids.append(float(amount.to_decimal()))
+                else:
+                    all_user_bids.append(float(amount))
+        
+        avg_bid = sum(all_user_bids) / len(all_user_bids) if all_user_bids else 0.0
+        
+        return {
+            "total_participated": total_participated,
+            "total_won": total_won,
+            "total_spent": total_spent,
+            "win_rate": win_rate,
+            "avg_bid": avg_bid,
+            "won_auctions": won_auctions,
+            "participated_auctions": participated_auctions
+        }
+    except Exception as e:
+        log.error(f"Error getting buyer stats: {e}")  # Use log instead of print
+        return {
+            "total_participated": 0,
+            "total_won": 0,
+            "total_spent": 0.0,
+            "win_rate": 0.0,
+            "avg_bid": 0.0,
+            "won_auctions": [],
+            "participated_auctions": []
+        }
+
+
+# ============================================
+# SELLER STATISTICS FUNCTIONS
+# ============================================
+
+def get_seller_stats(username):
+    """Get comprehensive statistics for a seller"""
+    try:
+        db = mongo_db  # Already connected to Atlas
+        history_col_local = db["auction_history"]
+        
+        # Get products by seller (use global products_col)
+        total_products = products_col.count_documents({"seller": username})
+        available_products = products_col.count_documents({"seller": username, "status": "available"})
+        in_auction_products = products_col.count_documents({"seller": username, "status": "in_auction"})
+        sold_products = products_col.count_documents({"seller": username, "status": "sold"})
+        
+        # Get MySQL auctions
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT COUNT(*) as total FROM auctions WHERE created_by=%s", (username,))
+        total_auctions = cursor.fetchone()["total"]
+        
+        cursor.execute("SELECT COUNT(*) as active FROM auctions WHERE created_by=%s AND status='active'", (username,))
+        active_auctions = cursor.fetchone()["active"]
+        
+        cursor.execute("SELECT COUNT(*) as closed FROM auctions WHERE created_by=%s AND status='closed'", (username,))
+        closed_auctions = cursor.fetchone()["closed"]
+        cursor.close()
+        conn.close()
+        
+        # Get completed auctions from MongoDB to calculate revenue
+        completed = list(history_col_local.find({
+            "seller": username
+        }))
+        
+        # Calculate total revenue
+        from bson.decimal128 import Decimal128  # Add this import at top if not there
+        total_revenue = 0.0
+        for auction in completed:
+            if auction.get("winner") != "No Bids":
+                final_bid = auction.get("final_bid", 0)
+                if isinstance(final_bid, Decimal128):
+                    total_revenue += float(final_bid.to_decimal())
+                else:
+                    total_revenue += float(final_bid)
+        
+        # Calculate average selling price
+        avg_price = total_revenue / sold_products if sold_products > 0 else 0.0
+        
+        # Success rate (sold / total auctions)
+        success_rate = (sold_products / total_auctions * 100) if total_auctions > 0 else 0.0
+        
+        return {
+            "total_products": total_products,
+            "available_products": available_products,
+            "in_auction_products": in_auction_products,
+            "sold_products": sold_products,
+            "total_auctions": total_auctions,
+            "active_auctions": active_auctions,
+            "closed_auctions": closed_auctions,
+            "total_revenue": total_revenue,
+            "avg_price": avg_price,
+            "success_rate": success_rate
+        }
+    except Exception as e:
+        log.error(f"Error getting seller stats: {e}")  # Use log instead of print
+        return {
+            "total_products": 0,
+            "available_products": 0,
+            "in_auction_products": 0,
+            "sold_products": 0,
+            "total_auctions": 0,
+            "active_auctions": 0,
+            "closed_auctions": 0,
+            "total_revenue": 0.0,
+            "avg_price": 0.0,
+            "success_rate": 0.0
+        }
+    
 def save_product_to_mongo(seller, name, description, base_price, image_bytes):
     image_file_id = fs.put(image_bytes)
 

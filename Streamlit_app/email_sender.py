@@ -1,44 +1,53 @@
-# email_sender.py — improved, production-friendly
+# email_sender.py — Real user emails, production-ready
 import os
 import smtplib
 import time
 import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import mysql.connector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 # ------------------------------
-# ENV VARS (explicit)
+# ENV VARS
 # ------------------------------
-# Buyer notification sender (explicit env names)
-SMTP_BUYER_USER = os.getenv("SMTP_USER")      # e.g. your-buyer-sender@gmail.com
-SMTP_BUYER_PASS = os.getenv("SMTP_PASS")      # app password for buyer sender
-SENDER_BUYER_EMAIL = "v.n.s.pavankumar.batchu@gmail.com"
-
-# Seller notification sender (explicit env names)
-SMTP_SELLER_USER = os.getenv("SMTP_SELLER")
-SMTP_SELLER_PASS = os.getenv("SMTP_SELLER_PASS")
-SENDER_SELLER_EMAIL = "pavankumar.batchu23@vit.edu"
-
+# Primary SMTP credentials (for all emails)
+SMTP_USER = os.getenv("SMTP_USER")          # Your main email for sending
+SMTP_PASS = os.getenv("SMTP_PASS")          # App password
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 
-# Small pause between emails to avoid provider rate-limits (seconds)
-EMAIL_SEND_DELAY = float(os.getenv("EMAIL_SEND_DELAY", "0.2"))
+# MySQL Connection (same as your other files)
+DB_CONFIG = {
+    "host": os.getenv("DB_HOST", "localhost"),
+    "user": os.getenv("DB_USER", "root"),
+    "password": os.getenv("DB_PASSWORD", "123456"),
+    "database":  "auction_system"
+}
+
+# Small pause between emails to avoid rate-limits (seconds)
+EMAIL_SEND_DELAY = float(os.getenv("EMAIL_SEND_DELAY", "0.5"))
 
 # ------------------------------
 # Helper: send a single email
 # ------------------------------
-def send_email(to_email: str, subject: str, body: str, smtp_user: str, smtp_pass: str, from_email: str = None) -> bool:
-    from_addr = from_email or smtp_user
-    if not smtp_user or not smtp_pass:
-        logging.error("Missing SMTP credentials for sender: %s", smtp_user)
+def send_email(to_email: str, subject: str, body: str) -> bool:
+    """
+    Sends an email to the specified recipient.
+    Returns True if successful, False otherwise.
+    """
+    if not SMTP_USER or not SMTP_PASS:
+        logging.error("❌ SMTP credentials not configured. Set SMTP_USER and SMTP_PASS env vars.")
+        return False
+
+    if not to_email or "@" not in to_email:
+        logging.warning(f"⚠️ Invalid email address: {to_email}")
         return False
 
     try:
         msg = MIMEMultipart()
-        msg["From"] = from_addr
+        msg["From"] = SMTP_USER
         msg["To"] = to_email
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "html"))
@@ -46,121 +55,278 @@ def send_email(to_email: str, subject: str, body: str, smtp_user: str, smtp_pass
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20)
         server.ehlo()
         server.starttls()
-        server.login(smtp_user, smtp_pass)
-        server.sendmail(from_addr, [to_email], msg.as_string())
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, [to_email], msg.as_string())
         server.quit()
 
-        logging.info("Email sent to %s (from %s)", to_email, from_addr)
+        logging.info(f"✅ Email sent to {to_email}")
         return True
 
-    except Exception as e:
-        logging.exception("Failed to send email to %s: %s", to_email, e)
+    except smtplib.SMTPAuthenticationError:
+        logging.error("❌ SMTP Authentication failed. Check your username/password.")
         return False
+    except smtplib.SMTPException as e:
+        logging.error(f"❌ SMTP error sending to {to_email}: {e}")
+        return False
+    except Exception as e:
+        logging.exception(f"❌ Failed to send email to {to_email}: {e}")
+        return False
+
+# --------------------------------------------------------
+# Get buyer emails from database
+# --------------------------------------------------------
+def get_buyer_emails():
+    """
+    Fetches all buyer emails from MySQL users table.
+    Returns list of email addresses.
+    """
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor(dictionary=True)
+        
+        # Get all buyers with valid email addresses
+        cursor.execute("""
+            SELECT email FROM users 
+            WHERE role='Buyer' 
+            AND email IS NOT NULL 
+            AND email != ''
+        """)
+        
+        buyers = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        # Extract email addresses
+        emails = [b["email"] for b in buyers if b.get("email")]
+        logging.info(f"📧 Found {len(emails)} buyer email(s)")
+        return emails
+        
+    except Exception as e:
+        logging.exception(f"❌ Failed to fetch buyer emails: {e}")
+        return []
 
 # --------------------------------------------------------
 # EMAIL: Notify buyers (auction started)
 # --------------------------------------------------------
 def notify_buyers(product_name, auction_code, start_time, duration_minutes, meet_link, base_price):
     """
-    Sends auction-start emails to all users with role='Buyer' and non-null email in MySQL users table.
+    Sends auction-start emails to all registered buyers.
     Returns a tuple: (success_count, total_count)
     """
-    subject = f"🔔 New Auction Live: {product_name} ({auction_code})"
-    body = f"""\
-<html><body style="font-family:Arial, sans-serif; color:#333;">
-  <div style="max-width:600px;margin:0 auto;padding:18px;border:1px solid #e6e6e6;border-radius:8px;">
-    <h2 style="color:#2b7a78;text-align:center;">New Auction — {product_name}</h2>
-    <p><b>Auction Code:</b> {auction_code}</p>
-    <p><b>Start Time (UTC):</b> {start_time} &nbsp; <b>Duration:</b> {duration_minutes} minutes</p>
-    <p><b>Starting Price:</b> ${base_price}</p>
-    <div style="text-align:center;margin:20px 0;">
-      <a href="{meet_link}" style="display:inline-block;padding:12px 20px;background:#2b7a78;color:#fff;border-radius:6px;text-decoration:none;">
-        🎥 Join Google Meet
-      </a>
+    subject = f"🔔 New Auction Alert: {product_name} ({auction_code})"
+    
+    body = f"""
+<html>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 2px solid #4CAF50; border-radius: 10px;">
+        <h2 style="color: #4CAF50; text-align: center;">🎉 New Live Auction Started!</h2>
+        <hr style="border: 1px solid #4CAF50;">
+        
+        <p style="font-size: 16px;"><strong>Dear Bidder,</strong></p>
+        <p>A new exciting auction is now live! Don't miss your chance to bid.</p>
+        
+        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>📦 Product:</strong> {product_name}</p>
+            <p><strong>🔑 Auction Code:</strong> <span style="color: #4CAF50; font-size: 18px; font-weight: bold;">{auction_code}</span></p>
+            <p><strong>💰 Starting Price:</strong> ${base_price}</p>
+            <p><strong>⏰ Duration:</strong> {duration_minutes} minutes</p>
+            <p><strong>🕐 Start Time (UTC):</strong> {start_time}</p>
+        </div>
+        
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{meet_link}" style="background-color: #4CAF50; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; font-size: 16px; display: inline-block;">
+                🎥 Join Google Meet
+            </a>
+        </div>
+        
+        <p style="font-size: 14px; color: #666; text-align: center;">
+            Use the auction code above to join the bidding room!
+        </p>
+        
+        <hr style="border: 1px solid #eee; margin-top: 20px;">
+        <p style="font-size: 12px; color: #999; text-align: center;">
+            You're receiving this because you're registered as a buyer on BidVerse.
+        </p>
     </div>
-    <p style="font-size:12px;color:#666;text-align:center;">Use the auction code above to join the bidding room.</p>
-  </div>
-</body></html>
+</body>
+</html>
 """
 
-    # Load buyers from MySQL
-    try:
-        import mysql.connector
-        DB_CONFIG = {
-            "host": "localhost",
-            "user": "root",
-            "password": "123456",
-            "database": "auction_system"
-        }
-        conn = mysql.connector.connect(**DB_CONFIG)
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT email FROM users WHERE role='Buyer' AND email IS NOT NULL")
-        buyers = cursor.fetchall()
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        logging.exception("Failed to fetch buyers from DB: %s", e)
-        return 0, 0
-
-    if not buyers:
-        logging.info("No buyer emails found to notify.")
+    # Get all buyer emails
+    buyer_emails = get_buyer_emails()
+    
+    if not buyer_emails:
+        logging.warning("⚠️ No buyer emails found to notify.")
         return 0, 0
 
     success = 0
-    total = len(buyers)
+    total = len(buyer_emails)
+    
+    logging.info(f"📨 Sending auction notification to {total} buyer(s)...")
 
-    for b in buyers:
-        email = b.get("email")
-        if not email:
-            continue
-        ok = send_email(
-            to_email=email,
-            subject=subject,
-            body=body,
-            smtp_user=SMTP_BUYER_USER,
-            smtp_pass=SMTP_BUYER_PASS,
-            from_email=SENDER_BUYER_EMAIL
-        )
-        if ok:
+    for email in buyer_emails:
+        if send_email(email, subject, body):
             success += 1
-        time.sleep(EMAIL_SEND_DELAY)
+        time.sleep(EMAIL_SEND_DELAY)  # Prevent rate limiting
 
-    logging.info("notify_buyers: sent %d/%d emails for auction %s", success, total, auction_code)
+    logging.info(f"✅ Notification complete: {success}/{total} emails sent for auction {auction_code}")
     return success, total
 
 # --------------------------------------------------------
-# EMAIL: Notify seller when auction finished
+# EMAIL: Notify seller (auction finished)
 # --------------------------------------------------------
 def notify_seller(seller_email: str, product_name: str, winner: str, final_bid: float):
-    subject = f"Auction Result — {product_name}"
-    body = f"""\
-<html><body style="font-family:Arial, sans-serif;color:#333;">
-  <div style="max-width:600px;margin:0 auto;padding:18px;border:1px solid #e6e6e6;border-radius:8px;">
-    <h2 style="color:#2b7a78;">Your Auction has Ended</h2>
-    <p><b>Product:</b> {product_name}</p>
-    <p><b>Winner:</b> {winner}</p>
-    <p><b>Final Price:</b> ${final_bid}</p>
-  </div>
-</body></html>
+    """
+    Sends auction result email to the seller.
+    Returns True if successful, False otherwise.
+    """
+    if not seller_email:
+        logging.warning("⚠️ No seller email provided")
+        return False
+    
+    subject = f"✅ Auction Complete: {product_name}"
+    
+    body = f"""
+<html>
+<body style="font-family: Arial, sans-serif; color: #333;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 2px solid #2196F3; border-radius: 10px;">
+        <h2 style="color: #2196F3; text-align: center;">🎉 Your Auction Has Ended</h2>
+        <hr style="border: 1px solid #2196F3;">
+        
+        <div style="background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>📦 Product:</strong> {product_name}</p>
+            <p><strong>🏆 Winner:</strong> {winner}</p>
+            <p><strong>💰 Final Price:</strong> <span style="color: #4CAF50; font-size: 20px; font-weight: bold;">${final_bid:.2f}</span></p>
+        </div>
+        
+        <p style="text-align: center; margin: 20px 0;">
+            Congratulations on completing your auction!
+        </p>
+        
+        <hr style="border: 1px solid #eee; margin-top: 20px;">
+        <p style="font-size: 12px; color: #999; text-align: center;">
+            BidVerse - Live Auction Platform
+        </p>
+    </div>
+</body>
+</html>
 """
-    return send_email(
-        to_email=seller_email,
-        subject=subject,
-        body=body,
-        smtp_user=SMTP_SELLER_USER,
-        smtp_pass=SMTP_SELLER_PASS,
-        from_email=SENDER_SELLER_EMAIL
-    )
+    
+    result = send_email(seller_email, subject, body)
+    
+    if result:
+        logging.info(f"✅ Seller notification sent to {seller_email}")
+    else:
+        logging.error(f"❌ Failed to send seller notification to {seller_email}")
+    
+    return result
 
 # --------------------------------------------------------
-# Helper: quick test to validate SMTP credentials & sending
+# EMAIL: Notify winner (auction won)
 # --------------------------------------------------------
-def test_send(receiver_email: str, which: str = "buyer"):
+def notify_winner(winner_email: str, product_name: str, final_bid: float, auction_code: str):
     """
-    Quick function you can call from Python to verify credentials.
-    which: 'buyer' or 'seller'
+    Sends congratulations email to the auction winner.
+    Returns True if successful, False otherwise.
     """
-    if which == "buyer":
-        return send_email(receiver_email, "TEST BUYER SMTP", "<p>Test message</p>", SMTP_BUYER_USER, SMTP_BUYER_PASS, SENDER_BUYER_EMAIL)
+    if not winner_email:
+        logging.warning("⚠️ No winner email provided")
+        return False
+    
+    subject = f"🎉 Congratulations! You won: {product_name}"
+    
+    body = f"""
+<html>
+<body style="font-family: Arial, sans-serif; color: #333;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 2px solid #FFD700; border-radius: 10px;">
+        <h2 style="color: #FFD700; text-align: center;">🏆 Congratulations! You Won!</h2>
+        <hr style="border: 1px solid #FFD700;">
+        
+        <p style="font-size: 16px;"><strong>Dear Winner,</strong></p>
+        <p>You have successfully won the auction!</p>
+        
+        <div style="background-color: #fffbea; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>📦 Product:</strong> {product_name}</p>
+            <p><strong>🔑 Auction Code:</strong> {auction_code}</p>
+            <p><strong>💰 Your Winning Bid:</strong> <span style="color: #4CAF50; font-size: 20px; font-weight: bold;">${final_bid:.2f}</span></p>
+        </div>
+        
+        <p style="text-align: center; margin: 20px 0;">
+            The seller will contact you shortly with next steps.
+        </p>
+        
+        <hr style="border: 1px solid #eee; margin-top: 20px;">
+        <p style="font-size: 12px; color: #999; text-align: center;">
+            Thank you for using BidVerse!
+        </p>
+    </div>
+</body>
+</html>
+"""
+    
+    result = send_email(winner_email, subject, body)
+    
+    if result:
+        logging.info(f"✅ Winner notification sent to {winner_email}")
     else:
-        return send_email(receiver_email, "TEST SELLER SMTP", "<p>Test message</p>", SMTP_SELLER_USER, SMTP_SELLER_PASS, SENDER_SELLER_EMAIL)
+        logging.error(f"❌ Failed to send winner notification to {winner_email}")
+    
+    return result
+
+# --------------------------------------------------------
+# Helper: Quick test to validate SMTP credentials
+# --------------------------------------------------------
+def test_email_config(test_recipient: str = None):
+    """
+    Tests the email configuration by sending a test email.
+    If test_recipient is not provided, uses SMTP_USER as recipient.
+    """
+    recipient = test_recipient or SMTP_USER
+    
+    if not recipient:
+        logging.error("❌ No test recipient provided and SMTP_USER not set")
+        return False
+    
+    subject = "✅ BidVerse Email Test"
+    body = """
+<html>
+<body style="font-family: Arial, sans-serif;">
+    <h2 style="color: #4CAF50;">Email Configuration Test</h2>
+    <p>If you're reading this, your email configuration is working correctly! ✅</p>
+    <p><strong>SMTP Server:</strong> {}</p>
+    <p><strong>SMTP Port:</strong> {}</p>
+</body>
+</html>
+""".format(SMTP_SERVER, SMTP_PORT)
+    
+    logging.info(f"📧 Sending test email to {recipient}...")
+    result = send_email(recipient, subject, body)
+    
+    if result:
+        logging.info("✅ Test email sent successfully!")
+    else:
+        logging.error("❌ Test email failed!")
+    
+    return result
+
+# --------------------------------------------------------
+# Main: Run test if executed directly
+# --------------------------------------------------------
+if __name__ == "__main__":
+    print("🧪 Testing email configuration...\n")
+    
+    # Check if credentials are set
+    if not SMTP_USER or not SMTP_PASS:
+        print("❌ ERROR: SMTP credentials not set!")
+        print("\nPlease set these environment variables:")
+        print("  export SMTP_USER='your-email@gmail.com'")
+        print("  export SMTP_PASS='your-app-password'")
+        print("\nFor Gmail, generate an App Password at:")
+        print("  https://myaccount.google.com/apppasswords")
+    else:
+        print(f"📧 SMTP User: {SMTP_USER}")
+        print(f"🔧 SMTP Server: {SMTP_SERVER}:{SMTP_PORT}\n")
+        
+        # Run test
+        test_email = input("Enter email to test (or press Enter to use SMTP_USER): ").strip()
+        test_email_config(test_email if test_email else None)
