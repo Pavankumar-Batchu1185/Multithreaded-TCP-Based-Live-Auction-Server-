@@ -192,84 +192,177 @@ def log_bid_to_mongo(product_id, bidder, bid_value):
         log.exception(f"Error logging to MongoDB: {e}")
 
 def finalize_mongo_auction(product_id, winner, final_bid):
+    """
+    Finalize auction by moving from active_auctions to auction_history
+    with complete bid data preservation
+    """
     try:
-        doc = active_col.find_one({"product_id": product_id})
-        product = products_col.find_one({"_id": ObjectId(product_id)})
-
-        # Extract metadata safely
-        product_name = product.get("name", "Unknown") if product else "Unknown"
-        auction_code = product.get("auction_code", "N/A") if product else "N/A"
-        seller = product.get("seller", "Unknown") if product else "Unknown"  # ✅ ADD THIS
+        log.info(f"🏁 Finalizing auction for product {product_id}, winner: {winner}, final_bid: {final_bid}")
         
-        if doc:
-            # sanitize bids and numeric fields
-            bids = doc.get("bids", [])
-            for b in bids:
-                # convert bid amounts
-                if "amount" in b:
-                    try:
-                        b["amount"] = float(b["amount"])
-                    except Exception:
-                        b["amount"] = float(str(b["amount"]))
-                # ensure bidder is a string
-                if "bidder" in b:
-                    b["bidder"] = str(b["bidder"])
-                # timestamps are fine (datetime)
-
-            doc["winner"] = str(winner)
-            doc["product_name"] = product_name
-            doc["auction_code"] = auction_code
-            doc["seller"] = seller  # ✅ ADD THIS
+        # Get active auction document
+        doc = active_col.find_one({"product_id": product_id})
+        if not doc:
+            log.warning(f"⚠️ No active auction document found for product {product_id}")
+            # Check if it already exists in history
+            existing = history_col.find_one({"product_id": product_id})
+            if existing:
+                log.info(f"✅ Auction already finalized in history for {product_id}")
+                return
+            else:
+                log.error(f"❌ No active or history document for {product_id}!")
+                # Create minimal history entry
+                doc = {
+                    "product_id": product_id,
+                    "bids": [],
+                    "winner": str(winner),
+                    "final_bid": float(final_bid),
+                    "closed_at": datetime.utcnow()
+                }
+        
+        # Get product details
+        product = products_col.find_one({"_id": ObjectId(product_id)})
+        if product:
+            product_name = product.get("name", "Unknown")
+            auction_code = product.get("auction_code", "N/A")
+            seller = product.get("seller", "Unknown")
+        else:
+            log.warning(f"⚠️ Product {product_id} not found in MongoDB")
+            product_name = "Unknown"
+            auction_code = "N/A"
+            seller = "Unknown"
+        
+        # Sanitize and validate bids
+        bids = doc.get("bids", [])
+        log.info(f"📝 Processing {len(bids)} bids for auction {auction_code}")
+        
+        sanitized_bids = []
+        for i, bid in enumerate(bids):
             try:
-                doc["final_bid"] = float(final_bid)
-            except Exception:
-                doc["final_bid"] = float(str(final_bid))
-            doc["closed_at"] = datetime.utcnow()
-
-            # insert sanitized doc into history
-            history_col.insert_one(doc)
-            active_col.delete_one({"product_id": product_id})
-            log.info(f"Moved {product_id} → auction_history (Seller: {seller})")
-
-        # Update product status to sold
-        products_col.update_one(
+                # Ensure amount is float
+                amount = bid.get("amount", 0)
+                if hasattr(amount, 'to_decimal'):  # Decimal128
+                    amount = float(amount.to_decimal())
+                else:
+                    amount = float(amount)
+                
+                # Ensure bidder is string
+                bidder = str(bid.get("bidder", "Unknown"))
+                
+                # Ensure timestamp exists
+                timestamp = bid.get("timestamp", datetime.utcnow())
+                
+                sanitized_bid = {
+                    "bidder": bidder,
+                    "amount": amount,
+                    "timestamp": timestamp
+                }
+                sanitized_bids.append(sanitized_bid)
+                
+            except Exception as bid_error:
+                log.error(f"❌ Error sanitizing bid {i}: {bid_error}")
+                continue
+        
+        log.info(f"✅ Sanitized {len(sanitized_bids)} bids successfully")
+        
+        # Log all unique bidders
+        unique_bidders = set(b["bidder"] for b in sanitized_bids)
+        log.info(f"👥 Unique bidders: {unique_bidders}")
+        
+        # Create history document
+        history_doc = {
+            "product_id": product_id,
+            "product_name": product_name,
+            "auction_code": auction_code,
+            "seller": seller,
+            "winner": str(winner),
+            "final_bid": float(final_bid),
+            "bids": sanitized_bids,  # Complete bid history
+            "closed_at": datetime.utcnow()
+        }
+        
+        # Insert into history
+        result = history_col.insert_one(history_doc)
+        log.info(f"✅ Inserted auction into history with _id: {result.inserted_id}")
+        
+        # Remove from active auctions
+        delete_result = active_col.delete_one({"product_id": product_id})
+        log.info(f"🗑️ Deleted {delete_result.deleted_count} active auction doc(s)")
+        
+        # Update product status
+        update_result = products_col.update_one(
             {"_id": ObjectId(product_id)},
             {"$set": {
                 "status": "sold",
                 "sold_to": winner,
-                "sold_price": float(final_bid),  
+                "sold_price": float(final_bid),
                 "sold_at": datetime.utcnow()
             }}
         )
+        log.info(f"📦 Updated product status (matched: {update_result.matched_count}, modified: {update_result.modified_count})")
+        
+        # Verify the auction was saved correctly
+        verify = history_col.find_one({"auction_code": auction_code})
+        if verify:
+            verify_bids = len(verify.get("bids", []))
+            verify_winner = verify.get("winner")
+            log.info(f"✅ VERIFICATION: Auction {auction_code} in history with {verify_bids} bids, winner: {verify_winner}")
+        else:
+            log.error(f"❌ VERIFICATION FAILED: Could not find {auction_code} in history!")
+        
+        log.info(f"🎉 Successfully finalized auction {auction_code} → Winner: {winner}, Final: ${final_bid}")
+        
     except Exception as e:
-        log.exception(f"Error finalizing auction: {e}")
+        log.exception(f"❌ CRITICAL ERROR finalizing auction for product {product_id}: {e}")
+        # Try to save minimal info even if error occurs
+        try:
+            history_col.insert_one({
+                "product_id": product_id,
+                "winner": str(winner),
+                "final_bid": float(final_bid),
+                "bids": [],
+                "closed_at": datetime.utcnow(),
+                "error": str(e)
+            })
+            log.info(f"⚠️ Saved minimal auction history despite error")
+        except:
+            log.error(f"❌ Failed to save even minimal history!")
 
 # ============================================
 # BUYER STATISTICS FUNCTIONS
 # ============================================
 
 def get_buyer_stats(username):
-    """Get comprehensive statistics for a buyer"""
+    """Get comprehensive statistics for a buyer with detailed logging"""
     try:
-        db = mongo_db  # Already connected to Atlas
+        log.info(f"📊 Fetching stats for buyer: {username}")
+        
+        db = mongo_db
         history_col_local = db["auction_history"]
         
-        # Get all completed auctions where user bid
+        # Get all completed auctions where user placed ANY bid
         participated_auctions = list(history_col_local.find({
             "bids.bidder": username
         }))
         
-        # Get auctions won
+        log.info(f"🔍 Found {len(participated_auctions)} auctions where {username} participated")
+        
+        # Get auctions won by this user
         won_auctions = list(history_col_local.find({
             "winner": username
         }))
+        
+        log.info(f"🏆 Found {len(won_auctions)} auctions won by {username}")
+        
+        # Log details of won auctions
+        for auction in won_auctions:
+            log.info(f"  - Won: {auction.get('product_name')} ({auction.get('auction_code')}) for ${auction.get('final_bid')}")
         
         # Calculate statistics
         total_participated = len(participated_auctions)
         total_won = len(won_auctions)
         
         # Calculate total spent
-        from bson.decimal128 import Decimal128  # Add this import at top if not there
+        from bson.decimal128 import Decimal128
         total_spent = 0.0
         for auction in won_auctions:
             final_bid = auction.get("final_bid", 0)
@@ -294,7 +387,7 @@ def get_buyer_stats(username):
         
         avg_bid = sum(all_user_bids) / len(all_user_bids) if all_user_bids else 0.0
         
-        return {
+        stats = {
             "total_participated": total_participated,
             "total_won": total_won,
             "total_spent": total_spent,
@@ -303,8 +396,13 @@ def get_buyer_stats(username):
             "won_auctions": won_auctions,
             "participated_auctions": participated_auctions
         }
+        
+        log.info(f"✅ Stats for {username}: {total_participated} participated, {total_won} won, ${total_spent:.2f} spent, {win_rate:.1f}% win rate")
+        
+        return stats
+        
     except Exception as e:
-        log.error(f"Error getting buyer stats: {e}")  # Use log instead of print
+        log.exception(f"❌ Error getting buyer stats for {username}: {e}")
         return {
             "total_participated": 0,
             "total_won": 0,
@@ -314,7 +412,6 @@ def get_buyer_stats(username):
             "won_auctions": [],
             "participated_auctions": []
         }
-
 
 # ============================================
 # SELLER STATISTICS FUNCTIONS

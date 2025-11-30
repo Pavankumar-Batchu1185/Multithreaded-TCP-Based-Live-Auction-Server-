@@ -1570,7 +1570,13 @@ else:
     if role == "Buyer" and st.session_state.in_auction_room and st.session_state.selected_auction:
         st_autorefresh(interval=3000, key="auction_room_refresh")
         init_tcp_client()
-        auction = get_auction_by_id(st.session_state.selected_auction)
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM auctions WHERE id=%s", (st.session_state.selected_auction,))
+        auction = cursor.fetchone()
+        cursor.close()
+        conn.close()
         
         # Handle auction closure/not found
         if not auction or auction.get('status') == 'closed':
@@ -1837,26 +1843,7 @@ else:
                     st.markdown("🟢 **Connected**")
                 else:
                     st.markdown("🔴 **Disconnected**")
-            st.markdown("---")
-            col_leave, col_status = st.columns([2, 1])
-            
-            with col_leave:
-                if st.button("⬅️ Leave Auction Room", use_container_width=True, type="secondary"):
-                    cleanup_tcp_client()
-                    st.session_state.in_auction_room = False
-                    st.session_state.selected_auction = None
-                    st.session_state.cached_auction = None
-                    st.session_state.pop('current_page', None)  # Reset navigation
-                    st.success("Left auction room")
-                    time.sleep(0.5)
-                    st.rerun()
-            
-            with col_status:
-                # Connection status indicator
-                if tcp_client.connected:
-                    st.markdown("🟢 **Connected**")
-                else:
-                    st.markdown("🔴 **Disconnected**")
+          
 
     # 8. Admin UI: Bid History (MongoDB)
     elif role == "Admin" and page == "Bid History":
