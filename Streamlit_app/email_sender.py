@@ -1,4 +1,4 @@
-# email_sender.py — Real user emails, production-ready
+
 import os
 import smtplib
 import time
@@ -10,8 +10,8 @@ import mysql.connector
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 
-SMTP_USER = os.getenv("SMTP_USER")          #  main email for sending
-SMTP_PASS = os.getenv("SMTP_PASS")          # App password
+SMTP_USER = os.getenv("SMTP_USER")         
+SMTP_PASS = os.getenv("SMTP_PASS")         
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 

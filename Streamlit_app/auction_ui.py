@@ -545,7 +545,6 @@ if not st.session_state.logged_in:
             else:
                 if register_user(new_user, new_pass, role, new_email):
                     pass
-# AUTHENTICATED UI
 else:
     role = st.session_state.role
     username = st.session_state.username
@@ -713,7 +712,6 @@ else:
                                             base_price=p.get("base_price", 0),
                                             duration_minutes=int(duration)
                                         )
-                                        # Notify buyers in background via email (logic unchanged)
                                         start_time = datetime.utcnow().isoformat()
                                         try:
                                             notify_buyers(
@@ -746,7 +744,7 @@ else:
                     st.success(f"🎉 **{p.get('name')}** sold to **{p.get('sold_to','N/A')}** for **${p.get('sold_price','N/A')}**")
                     st.caption(f"Code: {p.get('auction_code', 'N/A')} | Sold At: {p.get('sold_at')}")
 
-    # 4. Admin UI: Server Control
+    # Admin UI: Server Control
     elif role == "Admin" and page == "Server Control":
         st.header("⚙️ Auction Server Control Panel")
         
@@ -842,7 +840,7 @@ else:
         
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # 5. Admin UI: Closed Auctions
+    #  Admin UI: Closed Auctions
     elif role == "Admin" and page == "Closed Auctions":
         st.header("🔒 Closed Auctions Archive")
         closed_auctions = get_closed_auctions()
@@ -1432,7 +1430,7 @@ else:
                     for auction in lost_list:
                         st.error(f"❌ {auction.get('product_name', 'Unknown')}")
 
-    # 7. Buyer UI: Inside Auction Room (Bidding)
+    #  Buyer UI: Inside Auction Room (Bidding)
     if role == "Buyer" and st.session_state.in_auction_room and st.session_state.selected_auction:
         st_autorefresh(interval=3000, key="auction_room_refresh")
         init_tcp_client()
@@ -1773,7 +1771,7 @@ else:
         except Exception as e:
             st.error(f"Could not connect to MongoDB or load history: {e}")
 
-    # 9. Seller UI: My Auctions
+    #  Seller UI: My Auctions
     elif role == "Seller" and page == "My Auctions":
         
         st.header("🔨 My Auctions Overview")
